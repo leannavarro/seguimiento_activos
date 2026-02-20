@@ -283,14 +283,14 @@ with tab2:
 
     # ─── Scatter: P/E vs EPS Growth ───────────────────────────────────────────
     st.subheader("P/E Forward vs Crecimiento EPS")
-    scatter_df = df_val.dropna(subset=["pe_forward", "EPS Growth"]).copy()
+    scatter_df = df_val.dropna(subset=["pe_forward", "earnings_growth"]).copy()
     if not scatter_df.empty:
         fig_scatter = px.scatter(
             scatter_df,
-            x="EPS Growth", y="P/E Forward",
+            x="earnings_growth", y="pe_forward",
             text="Ticker",
             template="plotly_white",
-            labels={"EPS Growth": "Crecimiento EPS (YoY)", "P/E Forward": "P/E Forward"},
+            labels={"earnings_growth": "Crecimiento EPS (YoY)", "pe_forward": "P/E Forward"},
         )
         fig_scatter.update_traces(textposition="top center", marker=dict(size=12))
         fig_scatter.update_layout(height=450)
@@ -300,15 +300,15 @@ with tab2:
 
     # ─── Bar: Márgenes comparativos ────────────────────────────────────────────
     st.subheader("Márgenes operativo y neto")
-    margin_df = df_val[["Ticker", "Mg. Operativo", "Mg. Neto"]].dropna(subset=["Mg. Operativo"])
+    margin_df = df_val[["Ticker", "operating_margins", "profit_margins"]].dropna(subset=["operating_margins"])
     if not margin_df.empty:
         margin_melt = margin_df.melt(id_vars="Ticker", var_name="Margen", value_name="Valor")
         margin_melt["Valor"] = margin_melt["Valor"] * 100
+        margin_melt["Margen"] = margin_melt["Margen"].map({"operating_margins": "Mg. Operativo", "profit_margins": "Mg. Neto"})
         fig_margins = px.bar(
             margin_melt,
             x="Ticker", y="Valor", color="Margen",
-            barmode="group",
-            template="plotly_white",
+            barmode="group", template="plotly_white",
             labels={"Valor": "%"},
         )
         fig_margins.update_layout(height=400)
@@ -316,15 +316,15 @@ with tab2:
 
     # ─── Bar: ROE / ROA ────────────────────────────────────────────────────────
     st.subheader("ROE y ROA")
-    roe_df = df_val[["Ticker", "ROE", "ROA"]].dropna(subset=["ROE"])
+    roe_df = df_val[["Ticker", "return_on_equity", "return_on_assets"]].dropna(subset=["return_on_equity"])
     if not roe_df.empty:
         roe_melt = roe_df.melt(id_vars="Ticker", var_name="Ratio", value_name="Valor")
         roe_melt["Valor"] = roe_melt["Valor"] * 100
+        roe_melt["Ratio"] = roe_melt["Ratio"].map({"return_on_equity": "ROE", "return_on_assets": "ROA"})
         fig_roe = px.bar(
             roe_melt,
             x="Ticker", y="Valor", color="Ratio",
-            barmode="group",
-            template="plotly_white",
+            barmode="group", template="plotly_white",
             labels={"Valor": "%"},
         )
         fig_roe.update_layout(height=400)
