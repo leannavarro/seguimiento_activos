@@ -29,9 +29,10 @@ RISK_FREE_RATE = 0.05
 
 FMP_BASE = "https://financialmodelingprep.com/stable"
 
-# ─── FMP HELPERS ──────────────────────────────────────────────────────────────
+# ─── FMP HELPERS (price target consensus only — other endpoints are premium) ──
 
 def _fmp_key():
+    """Always reads fresh — never cached."""
     try:
         k = st.secrets.get("FMP_API_KEY", "")
         if k:
@@ -40,20 +41,17 @@ def _fmp_key():
         pass
     return st.session_state.get("fmp_api_key", "")
 
-@st.cache_data(ttl=3600)
-def fmp_get(endpoint, api_key, params=None):
-    """Generic FMP stable API call. All params including symbol go in query string."""
+def fmp_get(endpoint, api_key, params_tuple=()):
+    """FMP stable API. params_tuple = tuple of (key, value) pairs for hashability."""
     if not api_key:
         return []
     url = f"{FMP_BASE}/{endpoint}"
-    p = {"apikey": api_key}
-    if params:
-        p.update(params)
+    p = {"apikey": api_key, **dict(params_tuple)}
     try:
         r = requests.get(url, params=p, timeout=15)
         if r.status_code != 200:
             st.session_state.setdefault("fmp_errors", []).append(
-                f"{endpoint} {params}: HTTP {r.status_code} - {r.text[:150]}"
+                f"{endpoint} {dict(params_tuple)}: HTTP {r.status_code} - {r.text[:150]}"
             )
             return []
         data = r.json()
@@ -66,72 +64,18 @@ def fmp_get(endpoint, api_key, params=None):
         st.session_state.setdefault("fmp_errors", []).append(f"{endpoint}: {str(e)}")
         return []
 
-def _to_df(data, date_col="date"):
-    if not data:
-        return pd.DataFrame()
-    df = pd.DataFrame(data)
-    if df.empty or date_col not in df.columns:
-        return pd.DataFrame()
-    df[date_col] = pd.to_datetime(df[date_col])
-    return df.sort_values(date_col)
-
-def get_key_metrics_history(ticker, api_key, limit=10):
-    data = fmp_get("key-metrics", api_key, {"symbol": ticker, "limit": limit, "period": "annual"})
-    return _to_df(data)
-
-def get_ratios_history(ticker, api_key, limit=10):
-    data = fmp_get("ratios", api_key, {"symbol": ticker, "limit": limit, "period": "annual"})
-    return _to_df(data)
-
-def get_analyst_estimates(ticker, api_key, limit=5):
-    data = fmp_get("analyst-estimates", api_key, {"symbol": ticker, "limit": limit, "period": "annual"})
-    if not data:
-        data = fmp_get("analyst-estimates", api_key, {"symbol": ticker, "limit": limit})
-    return _to_df(data)
-
-def get_price_target(ticker, api_key):
-    data = fmp_get("price-target-consensus", api_key, {"symbol": ticker})
+def get_price_target_fmp(ticker, api_key):
+    """Price target consensus from FMP — one of the few free endpoints."""
+    data = fmp_get("price-target-consensus", api_key, (("symbol", ticker),))
     if data and isinstance(data, list):
         return data[0]
     return {}
 
-def get_price_target_history(ticker, api_key, limit=15):
-    data = fmp_get("price-target", api_key, {"symbol": ticker, "limit": limit})
-    if not data:
-        return pd.DataFrame()
-    df = pd.DataFrame(data)
-    if df.empty:
-        return pd.DataFrame()
-    date_col = next((c for c in ["publishedDate", "date", "updatedAt"] if c in df.columns), None)
-    if date_col:
-        df["date"] = pd.to_datetime(df[date_col])
-    return df
-
-def get_income_history(ticker, api_key, limit=10):
-    data = fmp_get("income-statement", api_key, {"symbol": ticker, "limit": limit, "period": "annual"})
-    return _to_df(data)
-
-def get_cashflow_history(ticker, api_key, limit=10):
-    data = fmp_get("cash-flow-statement", api_key, {"symbol": ticker, "limit": limit, "period": "annual"})
-    return _to_df(data)
-
-@st.cache_data(ttl=3600)
-def get_profile(ticker, api_key):
-    """Company profile — includes sector, industry, description, market cap, etc."""
-    data = fmp_get("profile", api_key, {"symbol": ticker})
-    if data and isinstance(data, list):
-        return data[0]
-    return {}
-
-# ─── YFINANCE ─────────────────────────────────────────────────────────────────
-
-@st.cache_data(ttl=3600)
-def load_data(tickers, period="2y"):
-    return yf.download(tickers, period=period, auto_adjust=True)
+# ─── YFINANCE FUNDAMENTALS ────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600)
 def get_info_yf(tickers):
-    """Pull snapshot fundamentals from yfinance."""
+    """Snapshot fundamentals from yfinance .info"""
     info = {}
     for t in tickers:
         try:
@@ -153,72 +97,115 @@ def get_info_yf(tickers):
                 "return_on_assets": i.get("returnOnAssets", None),
                 "debt_to_equity": i.get("debtToEquity", None),
                 "buyback_yield": i.get("buybackYield", None),
+                "roic": None,
+                "fcf_yield": None,
             }
         except Exception:
             info[t] = {k: None for k in [
                 "pe_ratio", "pe_forward", "peg_ratio", "ps_ratio", "pb_ratio",
                 "ev_ebitda", "market_cap", "revenue_growth", "earnings_growth",
                 "operating_margins", "profit_margins", "return_on_equity",
-                "return_on_assets", "debt_to_equity", "buyback_yield"
+                "return_on_assets", "debt_to_equity", "buyback_yield", "roic", "fcf_yield"
             ]}
             info[t]["dividend_yield"] = 0
     return info
 
 @st.cache_data(ttl=3600)
-def get_info_fmp(tickers, api_key):
-    """Pull snapshot fundamentals from FMP profile + key-metrics (TTM)."""
-    info = {}
-    if not api_key:
-        return info
-    for t in tickers:
-        if t in ETF_TICKERS:
-            continue
-        try:
-            p = get_profile(t, api_key)
-            # key-metrics TTM for ROIC, FCF yield etc
-            km = fmp_get("key-metrics-ttm", api_key, {"symbol": t})
-            km = km[0] if km else {}
-            info[t] = {
-                "market_cap": p.get("mktCap", None),
-                "pe_ratio": p.get("pe", None),
-                "pe_forward": None,  # not in profile
-                "pb_ratio": p.get("priceToBook", None),
-                "ps_ratio": None,
-                "peg_ratio": None,
-                "ev_ebitda": km.get("evToEbitda") or km.get("enterpriseValueOverEBITDA", None),
-                "dividend_yield": (p.get("lastDiv", 0) or 0) / (p.get("price", 1) or 1),
-                "revenue_growth": None,
-                "earnings_growth": None,
-                "operating_margins": km.get("operatingIncomePerShareTTM", None),
-                "profit_margins": km.get("netProfitMarginTTM", None),
-                "return_on_equity": km.get("roeTTM", None),
-                "return_on_assets": km.get("roaTTM", None),
-                "roic": km.get("roicTTM", None),
-                "debt_to_equity": km.get("debtToEquityTTM", None),
-                "fcf_yield": km.get("freeCashFlowYieldTTM", None),
-                "buyback_yield": None,
-            }
-        except Exception:
-            pass
-    return info
+def get_financials_yf(ticker):
+    """Annual income statement history from yfinance."""
+    try:
+        tk = yf.Ticker(ticker)
+        df = tk.financials  # rows=metrics, cols=dates
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = df.T.copy()
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        df.index.name = "date"
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def get_cashflow_yf(ticker):
+    """Annual cash flow from yfinance."""
+    try:
+        tk = yf.Ticker(ticker)
+        df = tk.cashflow
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = df.T.copy()
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        df.index.name = "date"
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def get_balance_yf(ticker):
+    """Annual balance sheet from yfinance."""
+    try:
+        tk = yf.Ticker(ticker)
+        df = tk.balance_sheet
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = df.T.copy()
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        df.index.name = "date"
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def get_analyst_yf(ticker):
+    """Analyst estimates: earnings + revenue forward."""
+    try:
+        tk = yf.Ticker(ticker)
+        return {
+            "price_targets": tk.analyst_price_targets,   # dict: low/mean/high/current
+            "recommendations": tk.recommendations_summary, # df: buy/hold/sell
+            "earnings_est": tk.earnings_estimate,          # df: forward EPS
+            "revenue_est": tk.revenue_estimate,            # df: forward revenue
+        }
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=3600)
+def compute_roic_history(ticker):
+    """Compute ROIC from yfinance financials + balance sheet."""
+    try:
+        fin = get_financials_yf(ticker)
+        bal = get_balance_yf(ticker)
+        if fin.empty or bal.empty:
+            return pd.DataFrame()
+        # NOPAT = EBIT * (1 - tax_rate), approximated as Operating Income * (1 - effective_tax)
+        # Invested Capital = Total Assets - Current Liabilities - Cash
+        rows = []
+        for date in fin.index:
+            if date not in bal.index:
+                continue
+            ebit = fin.loc[date].get("EBIT", fin.loc[date].get("Operating Income", None))
+            tax_prov = fin.loc[date].get("Tax Provision", None)
+            pretax = fin.loc[date].get("Pretax Income", None)
+            tax_rate = (tax_prov / pretax) if (tax_prov and pretax and pretax != 0) else 0.21
+            nopat = ebit * (1 - tax_rate) if ebit else None
+
+            total_assets = bal.loc[date].get("Total Assets", None)
+            curr_liab = bal.loc[date].get("Current Liabilities", None)
+            cash = bal.loc[date].get("Cash And Cash Equivalents", bal.loc[date].get("Cash", 0)) or 0
+            invested_capital = (total_assets - curr_liab - cash) if (total_assets and curr_liab) else None
+
+            roic = (nopat / invested_capital) if (nopat and invested_capital and invested_capital != 0) else None
+            rows.append({"date": date, "roic": roic})
+        return pd.DataFrame(rows).dropna()
+    except Exception:
+        return pd.DataFrame()
 
 def get_info(tickers, fmp_key=""):
-    """Merge yfinance + FMP data. FMP takes priority where available."""
-    yf_info = get_info_yf(tickers)
-    fmp_info = get_info_fmp(tickers, fmp_key) if fmp_key else {}
-    merged = {}
-    for t in tickers:
-        base = yf_info.get(t, {})
-        fmp = fmp_info.get(t, {})
-        merged[t] = base.copy()
-        # FMP overrides yfinance for non-None values
-        for k, v in fmp.items():
-            if v is not None:
-                merged[t][k] = v
-        # Add FMP-only fields
-        merged[t].setdefault("roic", None)
-        merged[t].setdefault("fcf_yield", None)
-    return merged
+    return get_info_yf(tickers)
+
 
 # ─── PRICE METRICS ────────────────────────────────────────────────────────────
 
@@ -338,9 +325,15 @@ with st.sidebar:
                                help="Gratis en financialmodelingprep.com — 250 req/día")
     if fmp_input:
         st.session_state["fmp_api_key"] = fmp_input
+        st.session_state["fmp_errors"] = []  # clear stale errors on new key entry
         st.success("Key cargada ✓")
     elif not _fmp_key():
         st.warning("Sin API Key: tabs Fundamentals y Analistas no disponibles.")
+
+    if st.button("🗑️ Limpiar caché", help="Forzar recarga de datos"):
+        st.cache_data.clear()
+        st.session_state["fmp_errors"] = []
+        st.rerun()
 
     # Debug panel
     if st.checkbox("🔍 Mostrar errores FMP", value=False):
@@ -352,14 +345,16 @@ with st.sidebar:
         else:
             st.success("Sin errores FMP registrados")
 
-FMP_KEY = _fmp_key()
+# FMP_KEY is read fresh via _fmp_key() at each call site
+# Note: FMP is only used for price-target-consensus in Analistas tab.
+# All fundamentals (P/E, margins, ROE etc) come from yfinance .info
 
 # ─── LOAD DATA ────────────────────────────────────────────────────────────────
 
 with st.spinner("Cargando datos de mercado..."):
     data = load_data(TICKERS, period="2y")
     prices = data["Close"]
-    info = get_info(TICKERS, FMP_KEY)
+    info = get_info(TICKERS, _fmp_key())
 
 st.title("📊 Dashboard")
 
@@ -509,216 +504,274 @@ with tab2:
     st.dataframe(ind_df.set_index("Ticker"), use_container_width=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — FUNDAMENTALS HISTÓRICOS (FMP)
+# TAB 3 — FUNDAMENTALS HISTÓRICOS (yfinance)
 # ══════════════════════════════════════════════════════════════════════════════
 with tab3:
-    if not FMP_KEY:
-        st.warning("Ingresá tu FMP API Key en el sidebar para ver fundamentals históricos.")
-        st.stop()
-
     equity = [t for t in TICKERS if t not in ETF_TICKERS]
     sel = st.multiselect("Activos", equity, default=equity[:4])
 
     if sel:
-        # ROIC / ROE / ROA histórico
-        st.subheader("ROIC, ROE y ROA histórico")
-        metric_sel = st.selectbox("Métrica", ["ROIC", "ROE", "ROA"])
-        metric_cfg = {
-            "ROIC": ("key-metrics", "roic"),
-            "ROE":  ("ratios",       "returnOnEquity"),
-            "ROA":  ("ratios",       "returnOnAssets"),
-        }
-        ep, col_k = metric_cfg[metric_sel]
-        fig_h = go.Figure()
+        # ── ROIC histórico (calculado) ───────────────────────────────────────
+        st.subheader("ROIC histórico (calculado)")
+        fig_roic = go.Figure()
         for t in sel:
-            df_h = get_key_metrics_history(t, FMP_KEY) if ep == "key-metrics" else get_ratios_history(t, FMP_KEY)
-            if df_h.empty or col_k not in df_h.columns:
+            df_r = compute_roic_history(t)
+            if df_r.empty:
                 continue
-            s = df_h[["date", col_k]].dropna()
-            fig_h.add_trace(go.Scatter(x=s["date"], y=s[col_k] * 100,
-                                        name=t, mode="lines+markers"))
-        fig_h.update_layout(yaxis_title=f"{metric_sel} (%)", height=420,
-                             template="plotly_white", hovermode="x unified")
-        st.plotly_chart(fig_h, use_container_width=True)
+            fig_roic.add_trace(go.Scatter(
+                x=df_r["date"], y=df_r["roic"] * 100,
+                name=t, mode="lines+markers"
+            ))
+        fig_roic.update_layout(yaxis_title="ROIC (%)", height=420,
+                                template="plotly_white", hovermode="x unified")
+        st.plotly_chart(fig_roic, use_container_width=True)
 
-        # Múltiplos históricos
-        st.subheader("Múltiplos históricos")
-        mult_sel = st.selectbox("Múltiplo",
-                                 ["priceEarningsRatio", "enterpriseValueOverEBITDA",
-                                  "priceToBookRatio", "priceToSalesRatio"],
-                                 format_func=lambda x: {
-                                     "priceEarningsRatio": "P/E",
-                                     "enterpriseValueOverEBITDA": "EV/EBITDA",
-                                     "priceToBookRatio": "P/B",
-                                     "priceToSalesRatio": "P/S"
-                                 }[x])
-        fig_m = go.Figure()
+        # ── Revenue + Net Income ─────────────────────────────────────────────
+        st.subheader("Revenue y Net Income histórico")
+        sel_inc = st.selectbox("Activo", sel, key="inc")
+        df_fin = get_financials_yf(sel_inc)
+        if not df_fin.empty:
+            ci1, ci2 = st.columns(2)
+            rev_col = next((c for c in ["Total Revenue", "Revenue"] if c in df_fin.columns), None)
+            ni_col  = next((c for c in ["Net Income", "Net Income Common Stockholders"] if c in df_fin.columns), None)
+            with ci1:
+                if rev_col:
+                    fig_rv = px.bar(
+                        x=df_fin.index.year.astype(str), y=df_fin[rev_col] / 1e9,
+                        template="plotly_white", labels={"x": "Año", "y": "USD Bn"},
+                        title="Revenue"
+                    )
+                    fig_rv.update_layout(height=320, showlegend=False)
+                    st.plotly_chart(fig_rv, use_container_width=True)
+            with ci2:
+                if ni_col:
+                    fig_ni = px.bar(
+                        x=df_fin.index.year.astype(str), y=df_fin[ni_col] / 1e9,
+                        template="plotly_white", labels={"x": "Año", "y": "USD Bn"},
+                        title="Net Income", color_discrete_sequence=["#00b09b"]
+                    )
+                    fig_ni.update_layout(height=320, showlegend=False)
+                    st.plotly_chart(fig_ni, use_container_width=True)
+        else:
+            st.info(f"Sin datos de income statement para {sel_inc}.")
+
+        # ── EBITDA histórico ─────────────────────────────────────────────────
+        st.subheader("EBITDA histórico")
+        fig_ebitda = go.Figure()
         for t in sel:
-            df_r = get_ratios_history(t, FMP_KEY)
-            if df_r.empty or mult_sel not in df_r.columns:
+            df_fin2 = get_financials_yf(t)
+            ebitda_col = next((c for c in ["EBITDA", "Normalized EBITDA"] if c in df_fin2.columns), None)
+            if df_fin2.empty or not ebitda_col:
                 continue
-            s = df_r[["date", mult_sel]].dropna()
-            fig_m.add_trace(go.Scatter(x=s["date"], y=s[mult_sel],
-                                        name=t, mode="lines+markers"))
-        fig_m.update_layout(height=400, template="plotly_white", hovermode="x unified")
-        st.plotly_chart(fig_m, use_container_width=True)
+            fig_ebitda.add_trace(go.Bar(
+                x=df_fin2.index.year.astype(str),
+                y=df_fin2[ebitda_col] / 1e9,
+                name=t
+            ))
+        fig_ebitda.update_layout(yaxis_title="USD Bn", barmode="group",
+                                  height=380, template="plotly_white")
+        st.plotly_chart(fig_ebitda, use_container_width=True)
 
-        # FCF histórico
+        # ── Free Cash Flow ───────────────────────────────────────────────────
         st.subheader("Free Cash Flow histórico")
         fig_fcf = go.Figure()
         for t in sel:
-            df_cf = get_cashflow_history(t, FMP_KEY)
-            if df_cf.empty or "freeCashFlow" not in df_cf.columns:
-                continue
-            s = df_cf[["date", "freeCashFlow"]].dropna()
-            fig_fcf.add_trace(go.Bar(x=s["date"].dt.year.astype(str),
-                                      y=s["freeCashFlow"] / 1e9, name=t))
+            df_cf = get_cashflow_yf(t)
+            fcf_col = next((c for c in ["Free Cash Flow", "FreeCashFlow"] if c in df_cf.columns), None)
+            if df_cf.empty or not fcf_col:
+                # Compute FCF = Operating CF - CapEx
+                ocf = next((c for c in ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"] if c in df_cf.columns), None)
+                capex = next((c for c in ["Capital Expenditure", "Capital Expenditures"] if c in df_cf.columns), None)
+                if ocf and capex:
+                    df_cf = df_cf.copy()
+                    df_cf["Free Cash Flow"] = df_cf[ocf] + df_cf[capex]  # capex is negative
+                    fcf_col = "Free Cash Flow"
+                else:
+                    continue
+            fig_fcf.add_trace(go.Bar(
+                x=df_cf.index.year.astype(str),
+                y=df_cf[fcf_col] / 1e9,
+                name=t
+            ))
         fig_fcf.update_layout(yaxis_title="USD Bn", barmode="group",
                                height=380, template="plotly_white")
         st.plotly_chart(fig_fcf, use_container_width=True)
 
-        # Buybacks + Dividendos
+        # ── Buybacks + Dividendos ────────────────────────────────────────────
         st.subheader("Retorno al accionista — Buybacks y Dividendos")
         sel_sh = st.selectbox("Activo", sel, key="sh")
-        df_cf2 = get_cashflow_history(sel_sh, FMP_KEY)
+        df_cf2 = get_cashflow_yf(sel_sh)
         if not df_cf2.empty:
-            df_sh = df_cf2[["date"]].copy()
-            if "commonStockRepurchased" in df_cf2.columns:
-                df_sh["Buybacks"] = df_cf2["commonStockRepurchased"].abs() / 1e9
-            if "dividendsPaid" in df_cf2.columns:
-                df_sh["Dividendos"] = df_cf2["dividendsPaid"].abs() / 1e9
-            df_sh["Año"] = df_sh["date"].dt.year.astype(str)
-            melt_c = [c for c in ["Buybacks", "Dividendos"] if c in df_sh.columns]
-            if melt_c:
-                sh_m = df_sh[["Año"] + melt_c].melt(id_vars="Año", var_name="Tipo", value_name="USD Bn")
+            buyback_col = next((c for c in [
+                "Repurchase Of Capital Stock", "Common Stock Repurchased",
+                "Repurchase Of Common Stock", "Purchase Of Business"
+            ] if c in df_cf2.columns), None)
+            div_col = next((c for c in [
+                "Payment Of Dividends", "Cash Dividends Paid",
+                "Common Stock Dividend Paid", "Dividends Paid"
+            ] if c in df_cf2.columns), None)
+
+            sh_data = {"Año": df_cf2.index.year.astype(str)}
+            if buyback_col:
+                sh_data["Buybacks"] = df_cf2[buyback_col].abs() / 1e9
+            if div_col:
+                sh_data["Dividendos"] = df_cf2[div_col].abs() / 1e9
+
+            melt_cols = [c for c in ["Buybacks", "Dividendos"] if c in sh_data]
+            if melt_cols:
+                df_sh = pd.DataFrame(sh_data)
+                sh_m = df_sh.melt(id_vars="Año", var_name="Tipo", value_name="USD Bn")
                 fig_sh = px.bar(sh_m, x="Año", y="USD Bn", color="Tipo",
                                 barmode="stack", template="plotly_white",
                                 title=f"{sel_sh} — Retorno al accionista")
                 fig_sh.update_layout(height=360)
                 st.plotly_chart(fig_sh, use_container_width=True)
-
-        # Revenue + Net Income
-        st.subheader("Revenue y Net Income histórico")
-        sel_inc = st.selectbox("Activo", sel, key="inc")
-        df_inc = get_income_history(sel_inc, FMP_KEY)
-        if not df_inc.empty:
-            ci1, ci2 = st.columns(2)
-            with ci1:
-                if "revenue" in df_inc.columns:
-                    fig_rv = px.bar(df_inc, x=df_inc["date"].dt.year.astype(str),
-                                    y=df_inc["revenue"] / 1e9, template="plotly_white",
-                                    labels={"x": "Año", "y": "USD Bn"}, title="Revenue")
-                    fig_rv.update_layout(height=320, showlegend=False)
-                    st.plotly_chart(fig_rv, use_container_width=True)
-            with ci2:
-                if "netIncome" in df_inc.columns:
-                    fig_ni = px.bar(df_inc, x=df_inc["date"].dt.year.astype(str),
-                                    y=df_inc["netIncome"] / 1e9, template="plotly_white",
-                                    labels={"x": "Año", "y": "USD Bn"}, title="Net Income",
-                                    color_discrete_sequence=["#00b09b"])
-                    fig_ni.update_layout(height=320, showlegend=False)
-                    st.plotly_chart(fig_ni, use_container_width=True)
+            else:
+                st.info("Sin datos de buybacks/dividendos.")
+        else:
+            st.info(f"Sin datos de cashflow para {sel_sh}.")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — ANALISTAS (FMP)
+# TAB 4 — ANALISTAS (yfinance + FMP price targets)
 # ══════════════════════════════════════════════════════════════════════════════
 with tab4:
-    if not FMP_KEY:
-        st.warning("Ingresá tu FMP API Key en el sidebar para ver estimaciones de analistas.")
-        st.stop()
-
     equity = [t for t in TICKERS if t not in ETF_TICKERS]
 
-    # Price Target Consensus
-    st.subheader("Precio objetivo — consenso de analistas")
+    # ── Price targets ────────────────────────────────────────────────────────
+    st.subheader("Precio objetivo — estimaciones de analistas")
     pt_rows = []
     for t in equity:
-        pt = get_price_target(t, FMP_KEY)
         s = prices[t].dropna()
         current = float(s.iloc[-1]) if not s.empty else None
-        tc = pt.get("targetConsensus", None)
-        upside = ((tc / current) - 1) if (tc and current) else None
+        # yfinance analyst_price_targets
+        try:
+            apt = yf.Ticker(t).analyst_price_targets or {}
+        except Exception:
+            apt = {}
+        target_mean = apt.get("mean", None)
+        target_low  = apt.get("low", None)
+        target_high = apt.get("high", None)
+        upside = ((target_mean / current) - 1) if (target_mean and current) else None
         pt_rows.append({
             "Ticker": t,
             "Precio Actual": current,
-            "Target Bajo": pt.get("targetLow", None),
-            "Target Consenso": tc,
-            "Target Alto": pt.get("targetHigh", None),
-            "Upside Consenso": upside,
+            "Target Bajo": target_low,
+            "Target Medio": target_mean,
+            "Target Alto": target_high,
+            "Upside": upside,
         })
 
     df_pt = pd.DataFrame(pt_rows)
     if not df_pt.empty:
         df_ptd = df_pt.copy()
-        for col in ["Precio Actual", "Target Bajo", "Target Consenso", "Target Alto"]:
+        for col in ["Precio Actual", "Target Bajo", "Target Medio", "Target Alto"]:
             df_ptd[col] = df_ptd[col].apply(fpr)
-        df_ptd["Upside Consenso"] = df_ptd["Upside Consenso"].apply(fp)
+        df_ptd["Upside"] = df_ptd["Upside"].apply(fp)
         st.dataframe(df_ptd.set_index("Ticker"), use_container_width=True)
 
-        uc = df_pt.dropna(subset=["Upside Consenso"]).sort_values("Upside Consenso")
+        uc = df_pt.dropna(subset=["Upside"]).sort_values("Upside")
         if not uc.empty:
-            colors = ["#ef5350" if v < 0 else "#26a69a" for v in uc["Upside Consenso"]]
+            colors = ["#ef5350" if v < 0 else "#26a69a" for v in uc["Upside"]]
             fig_up = go.Figure(go.Bar(
-                x=uc["Upside Consenso"] * 100, y=uc["Ticker"], orientation="h",
+                x=uc["Upside"] * 100, y=uc["Ticker"], orientation="h",
                 marker_color=colors,
-                text=[f"{v:.1f}%" for v in uc["Upside Consenso"] * 100],
+                text=[f"{v:.1f}%" for v in uc["Upside"] * 100],
                 textposition="outside"
             ))
-            fig_up.update_layout(xaxis_title="%", height=380, template="plotly_white",
-                                  title="Upside implícito vs consenso")
+            fig_up.update_layout(xaxis_title="%", height=350, template="plotly_white",
+                                  title="Upside implícito vs target medio")
             st.plotly_chart(fig_up, use_container_width=True)
 
-    # Analyst Estimates
-    st.subheader("Estimaciones forward")
+    # ── Recomendaciones buy/hold/sell ────────────────────────────────────────
+    st.subheader("Recomendaciones de analistas")
+    rec_rows = []
+    for t in equity:
+        try:
+            rec = yf.Ticker(t).recommendations_summary
+            if rec is not None and not rec.empty:
+                row = rec.iloc[0].to_dict() if len(rec) > 0 else {}
+                row["Ticker"] = t
+                rec_rows.append(row)
+        except Exception:
+            pass
+
+    if rec_rows:
+        df_rec = pd.DataFrame(rec_rows).set_index("Ticker")
+        # Normalize column names
+        df_rec.columns = [c.replace("strongBuy", "Strong Buy").replace("buy", "Buy")
+                           .replace("hold", "Hold").replace("sell", "Sell")
+                           .replace("strongSell", "Strong Sell") for c in df_rec.columns]
+        st.dataframe(df_rec, use_container_width=True)
+
+        # Stacked bar
+        rec_cols = [c for c in ["Strong Buy", "Buy", "Hold", "Sell", "Strong Sell"] if c in df_rec.columns]
+        if rec_cols:
+            rec_melt = df_rec[rec_cols].reset_index().melt(id_vars="Ticker",
+                                                            var_name="Rating", value_name="Count")
+            color_map = {
+                "Strong Buy": "#1b5e20", "Buy": "#43a047",
+                "Hold": "#f9a825", "Sell": "#e53935", "Strong Sell": "#b71c1c"
+            }
+            fig_rec = px.bar(rec_melt, x="Ticker", y="Count", color="Rating",
+                             barmode="stack", template="plotly_white",
+                             color_discrete_map=color_map,
+                             title="Distribución de recomendaciones")
+            fig_rec.update_layout(height=380)
+            st.plotly_chart(fig_rec, use_container_width=True)
+
+    # ── Forward estimates ────────────────────────────────────────────────────
+    st.subheader("Estimaciones forward — EPS y Revenue")
     sel_est = st.selectbox("Activo", equity, key="est")
-    df_est = get_analyst_estimates(sel_est, FMP_KEY)
-    if not df_est.empty:
-        years = df_est["date"].dt.year.astype(str)
+    try:
+        tk_est = yf.Ticker(sel_est)
+        eps_est    = tk_est.earnings_estimate
+        rev_est    = tk_est.revenue_estimate
+
         ce1, ce2 = st.columns(2)
         with ce1:
-            rev_cols = ["estimatedRevenueLow", "estimatedRevenueAvg", "estimatedRevenueHigh"]
-            if all(c in df_est.columns for c in rev_cols):
-                fig_re = go.Figure()
-                fig_re.add_trace(go.Bar(x=years, y=df_est["estimatedRevenueAvg"] / 1e9,
-                                         name="Consenso", marker_color="#42a5f5"))
-                fig_re.add_trace(go.Scatter(x=years, y=df_est["estimatedRevenueHigh"] / 1e9,
-                                             name="Alto", line=dict(dash="dot", color="green"), mode="lines"))
-                fig_re.add_trace(go.Scatter(x=years, y=df_est["estimatedRevenueLow"] / 1e9,
-                                             name="Bajo", line=dict(dash="dot", color="red"), mode="lines"))
-                fig_re.update_layout(title="Revenue estimado (USD Bn)", height=350, template="plotly_white")
-                st.plotly_chart(fig_re, use_container_width=True)
+            if eps_est is not None and not eps_est.empty:
+                fig_eps = go.Figure()
+                fig_eps.add_trace(go.Bar(
+                    x=eps_est.index.astype(str), y=eps_est.get("avg", eps_est.iloc[:, 0]),
+                    name="Consenso EPS", marker_color="#ab47bc"
+                ))
+                if "low" in eps_est.columns and "high" in eps_est.columns:
+                    fig_eps.add_trace(go.Scatter(
+                        x=eps_est.index.astype(str), y=eps_est["high"],
+                        name="Alto", line=dict(dash="dot", color="green"), mode="lines"
+                    ))
+                    fig_eps.add_trace(go.Scatter(
+                        x=eps_est.index.astype(str), y=eps_est["low"],
+                        name="Bajo", line=dict(dash="dot", color="red"), mode="lines"
+                    ))
+                fig_eps.update_layout(title="EPS estimado", height=350, template="plotly_white")
+                st.plotly_chart(fig_eps, use_container_width=True)
+            else:
+                st.info("Sin estimaciones de EPS.")
+
         with ce2:
-            eps_cols = ["estimatedEpsLow", "estimatedEpsAvg", "estimatedEpsHigh"]
-            if all(c in df_est.columns for c in eps_cols):
-                fig_ep = go.Figure()
-                fig_ep.add_trace(go.Bar(x=years, y=df_est["estimatedEpsAvg"],
-                                         name="Consenso", marker_color="#ab47bc"))
-                fig_ep.add_trace(go.Scatter(x=years, y=df_est["estimatedEpsHigh"],
-                                             name="Alto", line=dict(dash="dot", color="green"), mode="lines"))
-                fig_ep.add_trace(go.Scatter(x=years, y=df_est["estimatedEpsLow"],
-                                             name="Bajo", line=dict(dash="dot", color="red"), mode="lines"))
-                fig_ep.update_layout(title="EPS estimado (USD)", height=350, template="plotly_white")
-                st.plotly_chart(fig_ep, use_container_width=True)
-
-        if "estimatedEbitdaAvg" in df_est.columns:
-            fig_eb = px.bar(df_est, x=years, y=df_est["estimatedEbitdaAvg"] / 1e9,
-                            template="plotly_white", labels={"y": "USD Bn"},
-                            title="EBITDA estimado")
-            fig_eb.update_layout(height=320, showlegend=False)
-            st.plotly_chart(fig_eb, use_container_width=True)
-    else:
-        st.info(f"Sin estimaciones disponibles para {sel_est}.")
-
-    # Historial price targets individuales
-    st.subheader("Historial de price targets por analista")
-    sel_pth = st.selectbox("Activo", equity, key="pth")
-    df_pth = get_price_target_history(sel_pth, FMP_KEY)
-    if not df_pth.empty:
-        show = [c for c in ["date", "analystCompany", "priceTarget", "adjPriceTarget"] if c in df_pth.columns]
-        st.dataframe(df_pth[show].sort_values("date", ascending=False).head(15),
-                     use_container_width=True)
-    else:
-        st.info("Sin historial de price targets.")
+            if rev_est is not None and not rev_est.empty:
+                avg_col = next((c for c in ["avg", "mean"] if c in rev_est.columns), rev_est.columns[0])
+                fig_rev = go.Figure()
+                fig_rev.add_trace(go.Bar(
+                    x=rev_est.index.astype(str), y=rev_est[avg_col] / 1e9,
+                    name="Consenso Revenue", marker_color="#42a5f5"
+                ))
+                if "low" in rev_est.columns and "high" in rev_est.columns:
+                    fig_rev.add_trace(go.Scatter(
+                        x=rev_est.index.astype(str), y=rev_est["high"] / 1e9,
+                        name="Alto", line=dict(dash="dot", color="green"), mode="lines"
+                    ))
+                    fig_rev.add_trace(go.Scatter(
+                        x=rev_est.index.astype(str), y=rev_est["low"] / 1e9,
+                        name="Bajo", line=dict(dash="dot", color="red"), mode="lines"
+                    ))
+                fig_rev.update_layout(title="Revenue estimado (USD Bn)", height=350, template="plotly_white")
+                st.plotly_chart(fig_rev, use_container_width=True)
+            else:
+                st.info("Sin estimaciones de Revenue.")
+    except Exception as e:
+        st.info(f"Sin estimaciones disponibles para {sel_est}. ({e})")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 5 — RENDIMIENTO & CORRELACIÓN
