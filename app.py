@@ -103,20 +103,47 @@ def get_info_yf(tickers):
                 "return_on_assets": i.get("returnOnAssets", None),
                 "debt_to_equity": i.get("debtToEquity", None),
                 "buyback_yield": i.get("buybackYield", None),
+                # Margins
+                "gross_margins": i.get("grossMargins", None),
+                "ebitda_margins": i.get("ebitdaMargins", None),
+                # Cash flow
+                "free_cashflow": i.get("freeCashflow", None),
+                "operating_cashflow": i.get("operatingCashflow", None),
+                # Balance sheet
+                "total_cash": i.get("totalCash", None),
+                "total_debt": i.get("totalDebt", None),
+                "total_cash_per_share": i.get("totalCashPerShare", None),
+                # EPS
+                "trailing_eps": i.get("trailingEps", None),
+                "forward_eps": i.get("forwardEps", None),
+                # Enterprise value
+                "enterprise_value": i.get("enterpriseValue", None),
+                "ev_revenue": i.get("enterpriseToRevenue", None),
+                # Ownership
+                "insider_pct": i.get("heldPercentInsiders", None),
+                "institution_pct": i.get("heldPercentInstitutions", None),
+                # Short interest
+                "short_pct": i.get("sharesPercentSharesOut", None),
                 # ROIC: yfinance exposes returnOnCapital (some tickers)
                 "roic": i.get("returnOnCapital", None),
                 # FCF Yield = freeCashflow / marketCap
                 "fcf_yield": (i["freeCashflow"] / i["marketCap"])
                               if i.get("freeCashflow") and i.get("marketCap")
                               else None,
-                "free_cashflow": i.get("freeCashflow", None),
+                # Net debt = total_debt - total_cash
+                "net_debt": (i.get("totalDebt", 0) or 0) - (i.get("totalCash", 0) or 0)
+                             if i.get("totalDebt") else None,
             }
         except Exception:
             info[t] = {k: None for k in [
                 "pe_ratio", "pe_forward", "peg_ratio", "ps_ratio", "pb_ratio",
                 "ev_ebitda", "market_cap", "revenue_growth", "earnings_growth",
                 "operating_margins", "profit_margins", "return_on_equity",
-                "return_on_assets", "debt_to_equity", "buyback_yield", "roic", "fcf_yield", "free_cashflow"
+                "return_on_assets", "debt_to_equity", "buyback_yield", "roic", "fcf_yield",
+                "free_cashflow", "operating_cashflow", "total_cash", "total_debt",
+                "total_cash_per_share", "trailing_eps", "forward_eps", "enterprise_value",
+                "ev_revenue", "insider_pct", "institution_pct", "short_pct",
+                "gross_margins", "ebitda_margins", "net_debt"
             ]}
             info[t]["dividend_yield"] = 0
     return info
@@ -216,6 +243,236 @@ def compute_roic_history(ticker):
 
 def get_info(tickers, fmp_key=""):
     return get_info_yf(tickers)
+
+# ─── STOCKANALYSIS SCRAPER ────────────────────────────────────────────────────
+
+@st.cache_data(ttl=86400)  # cache 24 hours - financials don't change daily
+def scrape_stockanalysis(ticker, statement="financials"):
+    """
+    Scrape annual fundamentals from stockanalysis.com.
+    Returns DataFrame with years as columns, metrics as rows.
+    Falls back to empty DataFrame on any error.
+    statement: 'financials' | 'cash-flow-statement' | 'balance-sheet'
+    """
+    try:
+        from bs4 import BeautifulSoup
+
+        # Map tickers to stockanalysis URL format
+        sa_ticker = ticker.replace("-", ".").lower()  # BRK-B -> brk.b
+        url = f"https://stockanalysis.com/stocks/{sa_ticker}/{statement}/?p=annual"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://stockanalysis.com/",
+        }
+        r = requests.get(url, headers=headers, timeout=20)
+        if r.status_code != 200:
+            return pd.DataFrame()
+
+        soup = BeautifulSoup(r.text, "lxml")
+        table = soup.find("table")
+        if not table:
+            return pd.DataFrame()
+
+        # Parse header (years)
+        headers_row = table.find("thead")
+        if not headers_row:
+            return pd.DataFrame()
+        cols = [th.get_text(strip=True) for th in headers_row.find_all("th")]
+
+        # Parse rows
+        rows = []
+        for tr in table.find("tbody").find_all("tr"):
+            cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+            if cells:
+                rows.append(cells)
+
+        if not rows or not cols:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(rows, columns=cols[:len(rows[0])] if cols else None)
+        if df.empty:
+            return pd.DataFrame()
+
+        # First column is metric name
+        df = df.set_index(df.columns[0])
+
+        # Clean numeric values: remove $, %, B, M, commas
+        def clean_val(v):
+            if not isinstance(v, str):
+                return np.nan
+            v = v.strip().replace(",", "").replace("$", "").replace("%", "")
+            if v in ("-", "", "—", "N/A"):
+                return np.nan
+            mult = 1
+            if v.endswith("B"):
+                mult = 1e9
+                v = v[:-1]
+            elif v.endswith("M"):
+                mult = 1e6
+                v = v[:-1]
+            elif v.endswith("T"):
+                mult = 1e12
+                v = v[:-1]
+            try:
+                return float(v) * mult
+            except ValueError:
+                return np.nan
+
+        df = df.applymap(clean_val)
+        return df
+
+    except ImportError:
+        return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=86400)
+def get_sa_key_metrics(ticker):
+    """
+    Get key metrics from stockanalysis: ROIC, FCF, margins, EPS history.
+    Returns dict with metric name -> {year: value} or empty dict on failure.
+    """
+    if ticker in ETF_TICKERS:
+        return {}
+
+    results = {}
+
+    # Income statement: revenue, net income, EPS, margins
+    df_inc = scrape_stockanalysis(ticker, "financials")
+    if not df_inc.empty:
+        results["income"] = df_inc
+
+    # Cash flow: FCF, capex, buybacks, dividends
+    df_cf = scrape_stockanalysis(ticker, "cash-flow-statement")
+    if not df_cf.empty:
+        results["cashflow"] = df_cf
+
+    # Balance sheet: assets, debt, equity
+    df_bs = scrape_stockanalysis(ticker, "balance-sheet")
+    if not df_bs.empty:
+        results["balance"] = df_bs
+
+    return results
+
+def sa_available():
+    """Check if stockanalysis data is available (cached result)."""
+    return st.session_state.get("sa_available", None)
+
+def get_sa_roic_series(ticker):
+    """Extract ROIC history from stockanalysis data."""
+    data = get_sa_key_metrics(ticker)
+    if not data:
+        return pd.DataFrame()
+
+    # Try to find ROIC row directly
+    for key in ["income", "cashflow", "balance"]:
+        df = data.get(key, pd.DataFrame())
+        if df.empty:
+            continue
+        roic_row = next((idx for idx in df.index
+                         if "roic" in idx.lower() or "return on invested" in idx.lower()), None)
+        if roic_row:
+            s = df.loc[roic_row].dropna()
+            return pd.DataFrame({"year": s.index, "roic": s.values / 100})
+
+    # Calculate ROIC from components if not directly available
+    try:
+        df_inc = data.get("income", pd.DataFrame())
+        df_bs  = data.get("balance", pd.DataFrame())
+        df_cf  = data.get("cashflow", pd.DataFrame())
+        if df_inc.empty or df_bs.empty:
+            return pd.DataFrame()
+
+        # Find operating income
+        op_inc_row = next((idx for idx in df_inc.index
+                           if "operating income" in idx.lower()), None)
+        # Find tax rate from income statement
+        tax_row = next((idx for idx in df_inc.index
+                        if "income tax" in idx.lower() or "tax provision" in idx.lower()), None)
+        pretax_row = next((idx for idx in df_inc.index
+                           if "pretax" in idx.lower() or "pre-tax" in idx.lower()), None)
+
+        if not op_inc_row:
+            return pd.DataFrame()
+
+        # Invested capital: Total Assets - Current Liabilities - Cash
+        assets_row = next((idx for idx in df_bs.index if "total assets" in idx.lower()), None)
+        curr_liab_row = next((idx for idx in df_bs.index
+                              if "current liabilities" in idx.lower()), None)
+        cash_row = next((idx for idx in df_bs.index
+                         if idx.lower() in ["cash", "cash & equivalents",
+                                            "cash and equivalents"]), None)
+
+        if not (assets_row and curr_liab_row):
+            return pd.DataFrame()
+
+        common_years = [y for y in df_inc.columns if y in df_bs.columns]
+        rows = []
+        for yr in common_years:
+            ebit = df_inc.loc[op_inc_row, yr]
+            tax_rate = 0.21  # default
+            if tax_row and pretax_row:
+                tax = df_inc.loc[tax_row, yr]
+                pretax = df_inc.loc[pretax_row, yr]
+                if pretax and pretax != 0:
+                    tax_rate = abs(tax / pretax)
+            nopat = ebit * (1 - tax_rate) if pd.notna(ebit) else None
+
+            assets = df_bs.loc[assets_row, yr]
+            curr_l = df_bs.loc[curr_liab_row, yr]
+            cash = df_bs.loc[cash_row, yr] if cash_row and cash_row in df_bs.index else 0
+            cash = cash if pd.notna(cash) else 0
+            inv_cap = assets - curr_l - cash if pd.notna(assets) and pd.notna(curr_l) else None
+
+            roic = nopat / inv_cap if (nopat and inv_cap and inv_cap != 0) else None
+            if roic is not None:
+                rows.append({"year": yr, "roic": roic})
+
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
+def get_sa_fcf_series(ticker):
+    """Extract FCF history from stockanalysis cashflow data."""
+    data = get_sa_key_metrics(ticker)
+    df_cf = data.get("cashflow", pd.DataFrame())
+    if df_cf.empty:
+        return pd.DataFrame()
+
+    fcf_row = next((idx for idx in df_cf.index
+                    if "free cash flow" in idx.lower() or idx.lower() == "fcf"), None)
+    if fcf_row:
+        s = df_cf.loc[fcf_row].dropna()
+        return pd.DataFrame({"year": s.index, "fcf": s.values})
+    return pd.DataFrame()
+
+def get_sa_margins_series(ticker):
+    """Extract margin history from stockanalysis income data."""
+    data = get_sa_key_metrics(ticker)
+    df_inc = data.get("income", pd.DataFrame())
+    if df_inc.empty:
+        return pd.DataFrame()
+
+    result = {}
+    margin_map = {
+        "gross_margin": ["gross margin"],
+        "operating_margin": ["operating margin", "operating income margin"],
+        "net_margin": ["net margin", "net profit margin", "profit margin"],
+    }
+    for key, candidates in margin_map.items():
+        row = next((idx for idx in df_inc.index
+                    if any(c in idx.lower() for c in candidates)), None)
+        if row:
+            result[key] = df_inc.loc[row]
+
+    if result:
+        df = pd.DataFrame(result)
+        df.index.name = "year"
+        return df / 100  # convert % to decimal
+    return pd.DataFrame()
 
 
 # ─── PRICE METRICS ────────────────────────────────────────────────────────────
@@ -491,6 +748,33 @@ with tab2:
         df_vd[col] = df_vd[col].apply(fp)
     st.dataframe(df_vd.set_index("Ticker"), use_container_width=True)
 
+    # Extended metrics table
+    with st.expander("📋 Métricas adicionales (cash, deuda, EPS, ownership)"):
+        ext_rows = []
+        for t in TICKERS:
+            i = info[t]
+            mcap = i.get("market_cap") or 1
+            ext_rows.append({
+                "Ticker": t,
+                "EPS Trailing": fn(i.get("trailing_eps"), 2),
+                "EPS Forward": fn(i.get("forward_eps"), 2),
+                "Mg. Bruto": fp(i.get("gross_margins")),
+                "Mg. EBITDA": fp(i.get("ebitda_margins")),
+                "FCF Yield": fp(i.get("fcf_yield")),
+                "FCF (TTM)": fmc(i.get("free_cashflow")),
+                "Op. CF (TTM)": fmc(i.get("operating_cashflow")),
+                "Cash": fmc(i.get("total_cash")),
+                "Deuda Total": fmc(i.get("total_debt")),
+                "Deuda Neta": fmc(i.get("net_debt")),
+                "EV": fmc(i.get("enterprise_value")),
+                "EV/Rev": fn(i.get("ev_revenue"), 1),
+                "Insiders %": fp(i.get("insider_pct")),
+                "Instituciones %": fp(i.get("institution_pct")),
+                "Short %": fp(i.get("short_pct")),
+            })
+        df_ext = pd.DataFrame(ext_rows)
+        st.dataframe(df_ext.set_index("Ticker"), use_container_width=True)
+
     # Scatter
     st.subheader("P/E Forward vs Crecimiento EPS")
     sc = df_val.dropna(subset=["P/E Forward", "EPS Growth"]).copy()
@@ -584,20 +868,65 @@ with tab3:
     sel = st.multiselect("Activos", equity, default=equity[:4])
 
     if sel:
-        # ── ROIC histórico (calculado) ───────────────────────────────────────
-        st.subheader("ROIC histórico (calculado)")
+        # ── Data source indicator ────────────────────────────────────────────
+        # Try stockanalysis for first ticker to check availability
+        sa_test = get_sa_key_metrics(sel[0])
+        sa_ok = bool(sa_test)
+        if sa_ok:
+            st.session_state["sa_available"] = True
+            st.success("📊 Fuente: Stockanalysis.com (datos históricos completos)", icon="✅")
+        else:
+            st.session_state["sa_available"] = False
+            st.info("📊 Fuente: yfinance (histórico limitado a ~4 años). "
+                    "Stockanalysis no disponible desde este servidor.", icon="ℹ️")
+
+        # ── ROIC histórico ───────────────────────────────────────────────────
+        st.subheader("ROIC histórico")
         fig_roic = go.Figure()
         for t in sel:
-            df_r = compute_roic_history(t)
-            if df_r.empty:
-                continue
-            fig_roic.add_trace(go.Scatter(
-                x=df_r["date"], y=df_r["roic"] * 100,
-                name=t, mode="lines+markers"
-            ))
-        fig_roic.update_layout(yaxis_title="ROIC (%)", height=420,
-                                template="plotly_white", hovermode="x unified")
-        st.plotly_chart(fig_roic, use_container_width=True)
+            # Try stockanalysis first
+            df_r = get_sa_roic_series(t) if sa_ok else pd.DataFrame()
+            if not df_r.empty:
+                fig_roic.add_trace(go.Scatter(
+                    x=df_r["year"], y=df_r["roic"] * 100,
+                    name=t, mode="lines+markers"
+                ))
+            else:
+                # Fallback: compute from yfinance financials
+                df_r = compute_roic_history(t)
+                if not df_r.empty:
+                    fig_roic.add_trace(go.Scatter(
+                        x=df_r["date"], y=df_r["roic"] * 100,
+                        name=f"{t} (yf)", mode="lines+markers",
+                        line=dict(dash="dot")
+                    ))
+        if fig_roic.data:
+            fig_roic.update_layout(yaxis_title="ROIC (%)", height=420,
+                                    template="plotly_white", hovermode="x unified")
+            st.plotly_chart(fig_roic, use_container_width=True)
+        else:
+            st.info("Sin datos de ROIC disponibles para los activos seleccionados.")
+
+        # ── Márgenes históricos ──────────────────────────────────────────────
+        st.subheader("Márgenes históricos")
+        sel_mg = st.selectbox("Activo", sel, key="mg_hist")
+        if sa_ok:
+            df_mg = get_sa_margins_series(sel_mg)
+            if not df_mg.empty:
+                fig_mg_h = go.Figure()
+                color_map = {"gross_margin": "#42a5f5", "operating_margin": "#ab47bc", "net_margin": "#26a69a"}
+                label_map = {"gross_margin": "Mg. Bruto", "operating_margin": "Mg. Operativo", "net_margin": "Mg. Neto"}
+                for col in df_mg.columns:
+                    s = df_mg[col].dropna()
+                    fig_mg_h.add_trace(go.Scatter(
+                        x=s.index, y=s.values * 100,
+                        name=label_map.get(col, col),
+                        mode="lines+markers",
+                        line=dict(color=color_map.get(col))
+                    ))
+                fig_mg_h.update_layout(yaxis_title="%", height=380,
+                                        template="plotly_white", hovermode="x unified")
+                st.plotly_chart(fig_mg_h, use_container_width=True)
 
         # ── Revenue + Net Income ─────────────────────────────────────────────
         st.subheader("Revenue y Net Income histórico")
@@ -649,26 +978,40 @@ with tab3:
         st.subheader("Free Cash Flow histórico")
         fig_fcf = go.Figure()
         for t in sel:
-            df_cf = get_cashflow_yf(t)
-            fcf_col = next((c for c in ["Free Cash Flow", "FreeCashFlow"] if c in df_cf.columns), None)
-            if df_cf.empty or not fcf_col:
-                # Compute FCF = Operating CF - CapEx
-                ocf = next((c for c in ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"] if c in df_cf.columns), None)
-                capex = next((c for c in ["Capital Expenditure", "Capital Expenditures"] if c in df_cf.columns), None)
-                if ocf and capex:
-                    df_cf = df_cf.copy()
-                    df_cf["Free Cash Flow"] = df_cf[ocf] + df_cf[capex]  # capex is negative
-                    fcf_col = "Free Cash Flow"
-                else:
+            added = False
+            # Try stockanalysis first
+            if sa_ok:
+                df_sa_fcf = get_sa_fcf_series(t)
+                if not df_sa_fcf.empty:
+                    fig_fcf.add_trace(go.Bar(
+                        x=df_sa_fcf["year"],
+                        y=df_sa_fcf["fcf"] / 1e9,
+                        name=t
+                    ))
+                    added = True
+            # Fallback: yfinance cashflow
+            if not added:
+                df_cf = get_cashflow_yf(t)
+                if df_cf.empty:
                     continue
-            fig_fcf.add_trace(go.Bar(
-                x=df_cf.index.year.astype(str),
-                y=df_cf[fcf_col] / 1e9,
-                name=t
-            ))
-        fig_fcf.update_layout(yaxis_title="USD Bn", barmode="group",
-                               height=380, template="plotly_white")
-        st.plotly_chart(fig_fcf, use_container_width=True)
+                fcf_col = next((c for c in ["Free Cash Flow", "FreeCashFlow"] if c in df_cf.columns), None)
+                if not fcf_col:
+                    ocf = next((c for c in ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"] if c in df_cf.columns), None)
+                    capex = next((c for c in ["Capital Expenditure", "Capital Expenditures"] if c in df_cf.columns), None)
+                    if ocf and capex:
+                        df_cf = df_cf.copy()
+                        df_cf["Free Cash Flow"] = df_cf[ocf] + df_cf[capex]
+                        fcf_col = "Free Cash Flow"
+                if fcf_col:
+                    fig_fcf.add_trace(go.Bar(
+                        x=df_cf.index.year.astype(str),
+                        y=df_cf[fcf_col] / 1e9,
+                        name=f"{t} (yf)"
+                    ))
+        if fig_fcf.data:
+            fig_fcf.update_layout(yaxis_title="USD Bn", barmode="group",
+                                   height=380, template="plotly_white")
+            st.plotly_chart(fig_fcf, use_container_width=True)
 
         # ── Buybacks + Dividendos ────────────────────────────────────────────
         st.subheader("Retorno al accionista — Buybacks y Dividendos")
