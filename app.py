@@ -27,12 +27,11 @@ TICKER_META = {
 BENCHMARK = "SPY"
 RISK_FREE_RATE = 0.05
 
-FMP_BASE = "https://financialmodelingprep.com/api/v3"
+FMP_BASE = "https://financialmodelingprep.com/stable"
 
 # ─── FMP HELPERS ──────────────────────────────────────────────────────────────
 
 def _fmp_key():
-    """Get FMP key from secrets or session state."""
     try:
         k = st.secrets.get("FMP_API_KEY", "")
         if k:
@@ -42,10 +41,11 @@ def _fmp_key():
     return st.session_state.get("fmp_api_key", "")
 
 @st.cache_data(ttl=3600)
-def fmp_get(endpoint, ticker, api_key, params=None):
+def fmp_get(endpoint, api_key, params=None):
+    """Generic FMP stable API call. All params including symbol go in query string."""
     if not api_key:
         return []
-    url = f"{FMP_BASE}/{endpoint}/{ticker}"
+    url = f"{FMP_BASE}/{endpoint}"
     p = {"apikey": api_key}
     if params:
         p.update(params)
@@ -53,113 +53,75 @@ def fmp_get(endpoint, ticker, api_key, params=None):
         r = requests.get(url, params=p, timeout=15)
         if r.status_code != 200:
             st.session_state.setdefault("fmp_errors", []).append(
-                f"{endpoint}/{ticker}: HTTP {r.status_code} - {r.text[:120]}"
+                f"{endpoint} {params}: HTTP {r.status_code} - {r.text[:150]}"
             )
             return []
         data = r.json()
-        # FMP returns {"Error Message": "..."} for invalid key or plan issues
-        if isinstance(data, dict) and ("Error Message" in data or "message" in data):
-            msg = data.get("Error Message") or data.get("message", "Unknown error")
-            st.session_state.setdefault("fmp_errors", []).append(
-                f"{endpoint}/{ticker}: {msg}"
-            )
+        if isinstance(data, dict) and ("Error Message" in data or "message" in data or "error" in data):
+            msg = data.get("Error Message") or data.get("message") or data.get("error", "Unknown")
+            st.session_state.setdefault("fmp_errors", []).append(f"{endpoint}: {msg}")
             return []
-        return data
+        return data if isinstance(data, list) else []
     except Exception as e:
-        st.session_state.setdefault("fmp_errors", []).append(
-            f"{endpoint}/{ticker}: {str(e)}"
-        )
+        st.session_state.setdefault("fmp_errors", []).append(f"{endpoint}: {str(e)}")
         return []
 
-def get_key_metrics_history(ticker, api_key, limit=10):
-    data = fmp_get("key-metrics", ticker, api_key, {"limit": limit, "period": "annual"})
-    if not data or isinstance(data, dict):
+def _to_df(data, date_col="date"):
+    if not data:
         return pd.DataFrame()
     df = pd.DataFrame(data)
-    if df.empty or "date" not in df.columns:
+    if df.empty or date_col not in df.columns:
         return pd.DataFrame()
-    df["date"] = pd.to_datetime(df["date"])
-    return df.sort_values("date")
+    df[date_col] = pd.to_datetime(df[date_col])
+    return df.sort_values(date_col)
+
+def get_key_metrics_history(ticker, api_key, limit=10):
+    data = fmp_get("key-metrics", api_key, {"symbol": ticker, "limit": limit, "period": "annual"})
+    return _to_df(data)
 
 def get_ratios_history(ticker, api_key, limit=10):
-    data = fmp_get("ratios", ticker, api_key, {"limit": limit, "period": "annual"})
-    if not data or isinstance(data, dict):
-        return pd.DataFrame()
-    df = pd.DataFrame(data)
-    if df.empty or "date" not in df.columns:
-        return pd.DataFrame()
-    df["date"] = pd.to_datetime(df["date"])
-    return df.sort_values("date")
+    data = fmp_get("ratios", api_key, {"symbol": ticker, "limit": limit, "period": "annual"})
+    return _to_df(data)
 
 def get_analyst_estimates(ticker, api_key, limit=5):
-    # Try both path and query param style
-    data = fmp_get("analyst-estimates", ticker, api_key, {"limit": limit, "period": "annual"})
-    if not data or isinstance(data, dict):
-        # fallback: try without period param (some tickers don't have annual split)
-        data = fmp_get("analyst-estimates", ticker, api_key, {"limit": limit})
-    if not data or isinstance(data, dict):
-        return pd.DataFrame()
-    df = pd.DataFrame(data)
-    if df.empty or "date" not in df.columns:
-        return pd.DataFrame()
-    df["date"] = pd.to_datetime(df["date"])
-    return df.sort_values("date")
+    data = fmp_get("analyst-estimates", api_key, {"symbol": ticker, "limit": limit, "period": "annual"})
+    if not data:
+        data = fmp_get("analyst-estimates", api_key, {"symbol": ticker, "limit": limit})
+    return _to_df(data)
 
 def get_price_target(ticker, api_key):
-    # price-target-consensus uses symbol as query param
-    if not api_key:
-        return {}
-    url = f"{FMP_BASE}/price-target-consensus"
-    try:
-        r = requests.get(url, params={"symbol": ticker, "apikey": api_key}, timeout=15)
-        data = r.json()
-        if isinstance(data, dict) and ("Error Message" in data or "message" in data):
-            return {}
-        if isinstance(data, list) and data:
-            return data[0]
-        if isinstance(data, dict) and data:
-            return data
-    except Exception:
-        pass
+    data = fmp_get("price-target-consensus", api_key, {"symbol": ticker})
+    if data and isinstance(data, list):
+        return data[0]
     return {}
 
 def get_price_target_history(ticker, api_key, limit=15):
-    if not api_key:
+    data = fmp_get("price-target", api_key, {"symbol": ticker, "limit": limit})
+    if not data:
         return pd.DataFrame()
-    url = f"{FMP_BASE}/price-target"
-    try:
-        r = requests.get(url, params={"symbol": ticker, "apikey": api_key, "limit": limit}, timeout=15)
-        data = r.json()
-        if isinstance(data, dict) or not data:
-            return pd.DataFrame()
-        df = pd.DataFrame(data)
-        if df.empty:
-            return pd.DataFrame()
-        if "publishedDate" in df.columns:
-            df["date"] = pd.to_datetime(df["publishedDate"])
-        return df
-    except Exception:
+    df = pd.DataFrame(data)
+    if df.empty:
         return pd.DataFrame()
+    date_col = next((c for c in ["publishedDate", "date", "updatedAt"] if c in df.columns), None)
+    if date_col:
+        df["date"] = pd.to_datetime(df[date_col])
+    return df
 
 def get_income_history(ticker, api_key, limit=10):
-    data = fmp_get("income-statement", ticker, api_key, {"limit": limit, "period": "annual"})
-    if not data or isinstance(data, dict):
-        return pd.DataFrame()
-    df = pd.DataFrame(data)
-    if df.empty or "date" not in df.columns:
-        return pd.DataFrame()
-    df["date"] = pd.to_datetime(df["date"])
-    return df.sort_values("date")
+    data = fmp_get("income-statement", api_key, {"symbol": ticker, "limit": limit, "period": "annual"})
+    return _to_df(data)
 
 def get_cashflow_history(ticker, api_key, limit=10):
-    data = fmp_get("cash-flow-statement", ticker, api_key, {"limit": limit, "period": "annual"})
-    if not data or isinstance(data, dict):
-        return pd.DataFrame()
-    df = pd.DataFrame(data)
-    if df.empty or "date" not in df.columns:
-        return pd.DataFrame()
-    df["date"] = pd.to_datetime(df["date"])
-    return df.sort_values("date")
+    data = fmp_get("cash-flow-statement", api_key, {"symbol": ticker, "limit": limit, "period": "annual"})
+    return _to_df(data)
+
+@st.cache_data(ttl=3600)
+def get_profile(ticker, api_key):
+    """Company profile — includes sector, industry, description, market cap, etc."""
+    data = fmp_get("profile", api_key, {"symbol": ticker})
+    if data and isinstance(data, list):
+        return data[0]
+    return {}
 
 # ─── YFINANCE ─────────────────────────────────────────────────────────────────
 
@@ -168,13 +130,13 @@ def load_data(tickers, period="2y"):
     return yf.download(tickers, period=period, auto_adjust=True)
 
 @st.cache_data(ttl=3600)
-def get_info(tickers):
+def get_info_yf(tickers):
+    """Pull snapshot fundamentals from yfinance."""
     info = {}
     for t in tickers:
         try:
             i = yf.Ticker(t).info
             info[t] = {
-                "sector": i.get("sector", "N/A"),
                 "dividend_yield": i.get("dividendYield", 0) or 0,
                 "pe_ratio": i.get("trailingPE", None),
                 "pe_forward": i.get("forwardPE", None),
@@ -194,13 +156,69 @@ def get_info(tickers):
             }
         except Exception:
             info[t] = {k: None for k in [
-                "sector", "pe_ratio", "pe_forward", "peg_ratio", "ps_ratio", "pb_ratio",
+                "pe_ratio", "pe_forward", "peg_ratio", "ps_ratio", "pb_ratio",
                 "ev_ebitda", "market_cap", "revenue_growth", "earnings_growth",
-                "operating_margins", "profit_margins", "return_on_equity", "return_on_assets",
-                "debt_to_equity", "buyback_yield"
+                "operating_margins", "profit_margins", "return_on_equity",
+                "return_on_assets", "debt_to_equity", "buyback_yield"
             ]}
             info[t]["dividend_yield"] = 0
     return info
+
+@st.cache_data(ttl=3600)
+def get_info_fmp(tickers, api_key):
+    """Pull snapshot fundamentals from FMP profile + key-metrics (TTM)."""
+    info = {}
+    if not api_key:
+        return info
+    for t in tickers:
+        if t in ETF_TICKERS:
+            continue
+        try:
+            p = get_profile(t, api_key)
+            # key-metrics TTM for ROIC, FCF yield etc
+            km = fmp_get("key-metrics-ttm", api_key, {"symbol": t})
+            km = km[0] if km else {}
+            info[t] = {
+                "market_cap": p.get("mktCap", None),
+                "pe_ratio": p.get("pe", None),
+                "pe_forward": None,  # not in profile
+                "pb_ratio": p.get("priceToBook", None),
+                "ps_ratio": None,
+                "peg_ratio": None,
+                "ev_ebitda": km.get("evToEbitda") or km.get("enterpriseValueOverEBITDA", None),
+                "dividend_yield": (p.get("lastDiv", 0) or 0) / (p.get("price", 1) or 1),
+                "revenue_growth": None,
+                "earnings_growth": None,
+                "operating_margins": km.get("operatingIncomePerShareTTM", None),
+                "profit_margins": km.get("netProfitMarginTTM", None),
+                "return_on_equity": km.get("roeTTM", None),
+                "return_on_assets": km.get("roaTTM", None),
+                "roic": km.get("roicTTM", None),
+                "debt_to_equity": km.get("debtToEquityTTM", None),
+                "fcf_yield": km.get("freeCashFlowYieldTTM", None),
+                "buyback_yield": None,
+            }
+        except Exception:
+            pass
+    return info
+
+def get_info(tickers, fmp_key=""):
+    """Merge yfinance + FMP data. FMP takes priority where available."""
+    yf_info = get_info_yf(tickers)
+    fmp_info = get_info_fmp(tickers, fmp_key) if fmp_key else {}
+    merged = {}
+    for t in tickers:
+        base = yf_info.get(t, {})
+        fmp = fmp_info.get(t, {})
+        merged[t] = base.copy()
+        # FMP overrides yfinance for non-None values
+        for k, v in fmp.items():
+            if v is not None:
+                merged[t][k] = v
+        # Add FMP-only fields
+        merged[t].setdefault("roic", None)
+        merged[t].setdefault("fcf_yield", None)
+    return merged
 
 # ─── PRICE METRICS ────────────────────────────────────────────────────────────
 
@@ -341,7 +359,7 @@ FMP_KEY = _fmp_key()
 with st.spinner("Cargando datos de mercado..."):
     data = load_data(TICKERS, period="2y")
     prices = data["Close"]
-    info = get_info(TICKERS)
+    info = get_info(TICKERS, FMP_KEY)
 
 st.title("📊 Dashboard")
 
@@ -418,6 +436,8 @@ with tab2:
             "Deuda/Equity": i["debt_to_equity"],
             "Div. Yield": i["dividend_yield"],
             "Shareholder Yield": sh,
+            "ROIC": i.get("roic", None),
+            "FCF Yield": i.get("fcf_yield", None),
         })
 
     df_val = pd.DataFrame(val_rows)
@@ -426,7 +446,7 @@ with tab2:
     for col in ["P/E Trailing", "P/E Forward", "PEG", "P/S", "P/B", "EV/EBITDA", "Deuda/Equity"]:
         df_vd[col] = df_vd[col].apply(lambda x: fn(x, 1))
     for col in ["Rev. Growth", "EPS Growth", "Mg. Operativo", "Mg. Neto", "ROE", "ROA",
-                "Div. Yield", "Shareholder Yield"]:
+                "Div. Yield", "Shareholder Yield", "ROIC", "FCF Yield"]:
         df_vd[col] = df_vd[col].apply(fp)
     st.dataframe(df_vd.set_index("Ticker"), use_container_width=True)
 
