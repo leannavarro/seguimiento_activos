@@ -336,6 +336,30 @@ with st.sidebar:
     elif not _fmp_key():
         st.warning("Sin API Key: tabs Fundamentals y Analistas no disponibles.")
 
+    st.divider()
+    st.subheader("📅 Período de análisis")
+    
+    DATA_PERIOD_MAP = {"1Y": "1y", "2Y": "2y", "3Y": "3y", "5Y": "5y", "10Y": "10y"}
+    data_period_label = st.select_slider(
+        "Datos históricos (descarga)",
+        options=list(DATA_PERIOD_MAP.keys()),
+        value="2Y",
+        help="Cuántos años de precios descarga. Afecta Max DD, volatilidad histórica y rolling Sharpe."
+    )
+    st.session_state["data_period"] = DATA_PERIOD_MAP[data_period_label]
+
+    CALC_PERIOD_MAP = {"6M": 126, "1Y": 252, "2Y": 504, "3Y": 756, "Todo": None}
+    calc_period_label = st.select_slider(
+        "Ventana de cálculo (métricas)",
+        options=list(CALC_PERIOD_MAP.keys()),
+        value="1Y",
+        help="Ventana para Sharpe, Sortino, Calmar, Beta, Alpha. Independiente de los datos descargados."
+    )
+    st.session_state["calc_days"] = CALC_PERIOD_MAP[calc_period_label]
+
+    st.caption(f"Datos: {data_period_label} · Métricas: {calc_period_label}")
+
+    st.divider()
     if st.button("🗑️ Limpiar caché", help="Forzar recarga de datos"):
         st.cache_data.clear()
         st.session_state["fmp_errors"] = []
@@ -357,8 +381,11 @@ with st.sidebar:
 
 # ─── LOAD DATA ────────────────────────────────────────────────────────────────
 
+_data_period = st.session_state.get("data_period", "2y")
+_calc_days   = st.session_state.get("calc_days", 252)
+
 with st.spinner("Cargando datos de mercado..."):
-    data = load_data(TICKERS, period="2y")
+    data = load_data(TICKERS, period=_data_period)
     prices = data["Close"]
     info = get_info(TICKERS, _fmp_key())
 
@@ -377,6 +404,7 @@ with tab1:
         s = prices[t].dropna()
         if s.empty:
             continue
+        cd = _calc_days  # use selected window
         rows.append({
             "Ticker": t,
             "Sector": TICKER_META.get(t, {}).get("sector", "N/A"),
@@ -389,13 +417,13 @@ with tab1:
             "3M": calc_return(prices, t, days=90),
             "YTD": calc_ytd(prices, t),
             "1Y": calc_return(prices, t, days=365),
-            "Sharpe": calc_sharpe(prices, t),
-            "Sortino": calc_sortino(prices, t),
+            "Sharpe": calc_sharpe(prices, t, days=cd) if cd else calc_sharpe(prices, t, days=len(s)),
+            "Sortino": calc_sortino(prices, t, days=cd) if cd else calc_sortino(prices, t, days=len(s)),
             "Calmar": calc_calmar(prices, t),
             "Max DD": calc_max_drawdown(prices, t),
             "DD Actual": calc_current_drawdown(prices, t),
-            "Beta": calc_beta(prices, t),
-            "Alpha (1Y)": calc_alpha(prices, t),
+            "Beta": calc_beta(prices, t, days=cd) if cd else calc_beta(prices, t, days=len(s)),
+            "Alpha (1Y)": calc_alpha(prices, t, days=cd) if cd else calc_alpha(prices, t, days=len(s)),
         })
 
     df_summary = pd.DataFrame(rows)
@@ -845,6 +873,65 @@ with tab5:
         fig_dd.update_layout(yaxis_title="Drawdown (%)", height=280,
                                template="plotly_white", showlegend=False)
         st.plotly_chart(fig_dd, use_container_width=True)
+
+    # ── Rolling Sharpe ────────────────────────────────────────────────────────
+    st.subheader("Rolling Sharpe ratio")
+    rs_col1, rs_col2 = st.columns([1, 3])
+    with rs_col1:
+        roll_window = st.selectbox("Ventana rolling", ["60 días", "90 días", "180 días"], index=1, key="roll_w")
+        roll_tickers = st.multiselect("Activos", TICKERS, default=TICKERS, key="roll_t")
+    roll_days = {"60 días": 60, "90 días": 90, "180 días": 180}[roll_window]
+
+    if roll_tickers:
+        fig_rs = go.Figure()
+        daily_returns = prices.pct_change().dropna()
+        for t in roll_tickers:
+            if t not in daily_returns.columns:
+                continue
+            r = daily_returns[t].dropna()
+            # Rolling annualized Sharpe
+            roll_mean = r.rolling(roll_days).mean() * 252
+            roll_std  = r.rolling(roll_days).std() * np.sqrt(252)
+            roll_sharpe = (roll_mean - RISK_FREE_RATE) / roll_std
+            is_b = t == BENCHMARK
+            fig_rs.add_trace(go.Scatter(
+                x=roll_sharpe.index, y=roll_sharpe.values, name=t,
+                line=dict(width=2.5 if is_b else 1.5, dash="dash" if is_b else "solid"),
+                opacity=1 if is_b else 0.85
+            ))
+        # Reference line at 0 and 1
+        fig_rs.add_hline(y=0, line_dash="dot", line_color="red", opacity=0.4)
+        fig_rs.add_hline(y=1, line_dash="dot", line_color="green", opacity=0.4,
+                          annotation_text="Sharpe = 1", annotation_position="left")
+        fig_rs.update_layout(
+            yaxis_title="Sharpe (rolling)", hovermode="x unified",
+            height=450, template="plotly_white",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig_rs, use_container_width=True)
+        st.caption(f"Línea roja = Sharpe 0 (no cubre la tasa libre de riesgo). "
+                   f"Línea verde = Sharpe 1 (referencia 'bueno'). Ventana: {roll_window}.")
+
+    # ── Rolling Volatilidad ────────────────────────────────────────────────────
+    st.subheader("Volatilidad rolling (anualizada)")
+    vol_tickers = st.multiselect("Activos", TICKERS, default=TICKERS[:4], key="vol_t")
+    if vol_tickers:
+        fig_vol = go.Figure()
+        for t in vol_tickers:
+            if t not in daily_returns.columns:
+                continue
+            r = daily_returns[t].dropna()
+            roll_vol = r.rolling(roll_days).std() * np.sqrt(252) * 100
+            fig_vol.add_trace(go.Scatter(
+                x=roll_vol.index, y=roll_vol.values, name=t,
+                line=dict(width=1.5)
+            ))
+        fig_vol.update_layout(
+            yaxis_title="Volatilidad anualizada (%)", hovermode="x unified",
+            height=380, template="plotly_white",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig_vol, use_container_width=True)
 
     # Correlación
     st.subheader("Matriz de correlación")
