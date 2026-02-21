@@ -50,10 +50,25 @@ def fmp_get(endpoint, ticker, api_key, params=None):
     if params:
         p.update(params)
     try:
-        r = requests.get(url, params=p, timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
+        r = requests.get(url, params=p, timeout=15)
+        if r.status_code != 200:
+            st.session_state.setdefault("fmp_errors", []).append(
+                f"{endpoint}/{ticker}: HTTP {r.status_code} - {r.text[:120]}"
+            )
+            return []
+        data = r.json()
+        # FMP returns {"Error Message": "..."} for invalid key or plan issues
+        if isinstance(data, dict) and ("Error Message" in data or "message" in data):
+            msg = data.get("Error Message") or data.get("message", "Unknown error")
+            st.session_state.setdefault("fmp_errors", []).append(
+                f"{endpoint}/{ticker}: {msg}"
+            )
+            return []
+        return data
+    except Exception as e:
+        st.session_state.setdefault("fmp_errors", []).append(
+            f"{endpoint}/{ticker}: {str(e)}"
+        )
         return []
 
 def get_key_metrics_history(ticker, api_key, limit=10):
@@ -77,7 +92,11 @@ def get_ratios_history(ticker, api_key, limit=10):
     return df.sort_values("date")
 
 def get_analyst_estimates(ticker, api_key, limit=5):
+    # Try both path and query param style
     data = fmp_get("analyst-estimates", ticker, api_key, {"limit": limit, "period": "annual"})
+    if not data or isinstance(data, dict):
+        # fallback: try without period param (some tickers don't have annual split)
+        data = fmp_get("analyst-estimates", ticker, api_key, {"limit": limit})
     if not data or isinstance(data, dict):
         return pd.DataFrame()
     df = pd.DataFrame(data)
@@ -87,21 +106,40 @@ def get_analyst_estimates(ticker, api_key, limit=5):
     return df.sort_values("date")
 
 def get_price_target(ticker, api_key):
-    data = fmp_get("price-target-consensus", ticker, api_key)
-    if not data or isinstance(data, dict):
+    # price-target-consensus uses symbol as query param
+    if not api_key:
         return {}
-    return data[0] if isinstance(data, list) and data else {}
+    url = f"{FMP_BASE}/price-target-consensus"
+    try:
+        r = requests.get(url, params={"symbol": ticker, "apikey": api_key}, timeout=15)
+        data = r.json()
+        if isinstance(data, dict) and ("Error Message" in data or "message" in data):
+            return {}
+        if isinstance(data, list) and data:
+            return data[0]
+        if isinstance(data, dict) and data:
+            return data
+    except Exception:
+        pass
+    return {}
 
 def get_price_target_history(ticker, api_key, limit=15):
-    data = fmp_get("price-target", ticker, api_key, {"limit": limit})
-    if not data or isinstance(data, dict):
+    if not api_key:
         return pd.DataFrame()
-    df = pd.DataFrame(data)
-    if df.empty:
+    url = f"{FMP_BASE}/price-target"
+    try:
+        r = requests.get(url, params={"symbol": ticker, "apikey": api_key, "limit": limit}, timeout=15)
+        data = r.json()
+        if isinstance(data, dict) or not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+        if df.empty:
+            return pd.DataFrame()
+        if "publishedDate" in df.columns:
+            df["date"] = pd.to_datetime(df["publishedDate"])
+        return df
+    except Exception:
         return pd.DataFrame()
-    if "publishedDate" in df.columns:
-        df["date"] = pd.to_datetime(df["publishedDate"])
-    return df
 
 def get_income_history(ticker, api_key, limit=10):
     data = fmp_get("income-statement", ticker, api_key, {"limit": limit, "period": "annual"})
@@ -285,6 +323,16 @@ with st.sidebar:
         st.success("Key cargada ✓")
     elif not _fmp_key():
         st.warning("Sin API Key: tabs Fundamentals y Analistas no disponibles.")
+
+    # Debug panel
+    if st.checkbox("🔍 Mostrar errores FMP", value=False):
+        errors = st.session_state.get("fmp_errors", [])
+        if errors:
+            st.error("Errores FMP detectados:")
+            for e in errors[-10:]:
+                st.code(e)
+        else:
+            st.success("Sin errores FMP registrados")
 
 FMP_KEY = _fmp_key()
 
