@@ -103,15 +103,20 @@ def get_info_yf(tickers):
                 "return_on_assets": i.get("returnOnAssets", None),
                 "debt_to_equity": i.get("debtToEquity", None),
                 "buyback_yield": i.get("buybackYield", None),
-                "roic": None,
-                "fcf_yield": None,
+                # ROIC: yfinance exposes returnOnCapital (some tickers)
+                "roic": i.get("returnOnCapital", None),
+                # FCF Yield = freeCashflow / marketCap
+                "fcf_yield": (i["freeCashflow"] / i["marketCap"])
+                              if i.get("freeCashflow") and i.get("marketCap")
+                              else None,
+                "free_cashflow": i.get("freeCashflow", None),
             }
         except Exception:
             info[t] = {k: None for k in [
                 "pe_ratio", "pe_forward", "peg_ratio", "ps_ratio", "pb_ratio",
                 "ev_ebitda", "market_cap", "revenue_growth", "earnings_growth",
                 "operating_margins", "profit_margins", "return_on_equity",
-                "return_on_assets", "debt_to_equity", "buyback_yield", "roic", "fcf_yield"
+                "return_on_assets", "debt_to_equity", "buyback_yield", "roic", "fcf_yield", "free_cashflow"
             ]}
             info[t]["dividend_yield"] = 0
     return info
@@ -444,6 +449,13 @@ with tab2:
     for t in TICKERS:
         i = info[t]
         sh = (i["dividend_yield"] or 0) + (i["buyback_yield"] or 0) if i["buyback_yield"] else i["dividend_yield"]
+        # PEG: use yfinance value if available, else calculate P/E Forward / EPS Growth
+        peg = i["peg_ratio"]
+        if peg is None and i["pe_forward"] and i["earnings_growth"] and i["earnings_growth"] > 0:
+            peg = i["pe_forward"] / (i["earnings_growth"] * 100)
+        elif peg is None and i["pe_ratio"] and i["earnings_growth"] and i["earnings_growth"] > 0:
+            peg = i["pe_ratio"] / (i["earnings_growth"] * 100)
+
         val_rows.append({
             "Ticker": t,
             "Sector": TICKER_META.get(t, {}).get("sector", "N/A"),
@@ -452,7 +464,7 @@ with tab2:
             "Market Cap": i["market_cap"],
             "P/E Trailing": i["pe_ratio"],
             "P/E Forward": i["pe_forward"],
-            "PEG": i["peg_ratio"],
+            "PEG": peg,
             "P/S": i["ps_ratio"],
             "P/B": i["pb_ratio"],
             "EV/EBITDA": i["ev_ebitda"],
@@ -489,6 +501,33 @@ with tab2:
         fig_s.update_traces(textposition="top center", marker=dict(size=12))
         fig_s.update_layout(height=420)
         st.plotly_chart(fig_s, use_container_width=True)
+
+    # PEG bar chart
+    st.subheader("PEG Ratio — barato vs caro ajustado por crecimiento")
+    peg_df = df_val[["Ticker", "PEG"]].dropna(subset=["PEG"]).copy()
+    if not peg_df.empty:
+        peg_df = peg_df.sort_values("PEG")
+        colors_peg = ["#26a69a" if v < 1 else "#ef9a9a" if v < 2 else "#ef5350"
+                      for v in peg_df["PEG"]]
+        fig_peg = go.Figure(go.Bar(
+            x=peg_df["Ticker"], y=peg_df["PEG"],
+            marker_color=colors_peg,
+            text=[f"{v:.2f}" for v in peg_df["PEG"]],
+            textposition="outside"
+        ))
+        fig_peg.add_hline(y=1, line_dash="dot", line_color="white", opacity=0.5,
+                           annotation_text="PEG = 1 (referencia justo precio)",
+                           annotation_position="right")
+        fig_peg.update_layout(
+            height=380, template="plotly_dark" if True else "plotly_white",
+            template="plotly_white",
+            yaxis_title="PEG",
+            showlegend=False
+        )
+        st.plotly_chart(fig_peg, use_container_width=True)
+        st.caption("Verde < 1: barato dado su crecimiento · Naranja 1–2: valuación razonable · Rojo > 2: caro")
+    else:
+        st.info("Sin datos de PEG suficientes (requiere P/E y EPS Growth).")
 
     ca, cb = st.columns(2)
     with ca:
