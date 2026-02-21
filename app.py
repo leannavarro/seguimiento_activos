@@ -803,7 +803,7 @@ with tab2:
                            annotation_text="PEG = 1 (referencia justo precio)",
                            annotation_position="right")
         fig_peg.update_layout(
-            height=380, template="plotly_dark" if True else "plotly_white",
+            height=380,
             template="plotly_white",
             yaxis_title="PEG",
             showlegend=False
