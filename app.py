@@ -71,6 +71,12 @@ def get_price_target_fmp(ticker, api_key):
         return data[0]
     return {}
 
+# ─── YFINANCE PRICE DATA ─────────────────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def load_data(tickers, period="2y"):
+    return yf.download(tickers, period=period, auto_adjust=True)
+
 # ─── YFINANCE FUNDAMENTALS ────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600)
