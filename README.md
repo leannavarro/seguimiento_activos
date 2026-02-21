@@ -3,7 +3,7 @@
 Dashboard de seguimiento de activos con Streamlit + yfinance.
 
 ## Activos
-EEM, BRK-B, META, MSFT, ASML, SPY, TSM, VEA, EA
+EEM, BRK-B, META, MSFT, ASML, SPY, TSM, VEA
 
 ## Métricas
 - Precio actual y variación diaria
