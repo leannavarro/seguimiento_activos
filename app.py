@@ -29,6 +29,474 @@ RISK_FREE_RATE = 0.05
 
 FMP_BASE = "https://financialmodelingprep.com/stable"
 
+# ─── MAE API ──────────────────────────────────────────────────────────────────
+
+MAE_BASE = "https://api.mae.com.ar/MarketData/v1"
+MAE_SEG_SOBERANOS_PPT = "4"   # AL30D/CI, AE38D/CI, GD38D/CI …
+MAE_SEG_ONS           = "5"   # Obligaciones Negociables corporativas
+MAE_SEG_SOBERANOS_MAE = "2"   # AL29, AL30, GD29 … (sin sufijo plazo)
+
+def _mae_key():
+    try:
+        k = st.secrets.get("MAE_API_KEY", "")
+        if k:
+            return k
+    except Exception:
+        pass
+    return st.session_state.get("mae_api_key", "")
+
+@st.cache_data(ttl=300)
+def mae_cotizaciones_hoy():
+    """Cotizaciones intraday renta fija — segmento GP (soberanos garantizado PPT)."""
+    key = _mae_key()
+    if not key:
+        return pd.DataFrame()
+    try:
+        r = requests.get(
+            f"{MAE_BASE}/mercado/cotizaciones/rentafija",
+            headers={"x-api-key": key},
+            timeout=15,
+        )
+        r.raise_for_status()
+        raw = r.json().get("value", [])
+        df = pd.DataFrame([x for x in raw if x.get("ticker")])
+        if df.empty:
+            return df
+        # Normalizar: separar ticker base del sufijo /CI /24hs
+        df["ticker_base"] = df["ticker"].str.replace(r"/.*$", "", regex=True)
+        df["plazo_sfx"]   = df["ticker"].str.extract(r"/(.*)")
+        return df
+    except Exception as e:
+        st.session_state.setdefault("mae_errors", []).append(str(e))
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def mae_boletin(fecha: str):
+    """
+    Boletín diario MAE. fecha = 'YYYY-MM-DD'.
+    Devuelve dict {seg_codigo: DataFrame} con columnas estandarizadas.
+    Usa precioCierreHoy (plazo 000 = CI) como precio de referencia.
+    """
+    key = _mae_key()
+    if not key:
+        return {}
+    try:
+        r = requests.get(
+            f"{MAE_BASE}/mercado/boletin/ReporteResumenFinal",
+            headers={"x-api-key": key},
+            params={"fecha": fecha},
+            timeout=20,
+        )
+        r.raise_for_status()
+        data = r.json()
+        segs = data.get("segmento", [])
+        result = {}
+        for seg in segs:
+            cod = str(seg.get("segmentoCodigo", ""))
+            titulos = seg.get("titulos", {})
+            # titulos puede ser lista o dict con "value"
+            if isinstance(titulos, dict):
+                titulos = titulos.get("value", [])
+            df = pd.DataFrame(titulos)
+            if df.empty:
+                continue
+            # Conservar solo filas con ticker real
+            df = df[df["ticker"].notna() & (df["ticker"] != "")]
+            # Separar ticker base y sufijo
+            df["ticker_base"] = df["ticker"].str.replace(r"/.*$", "", regex=True)
+            df["plazo_sfx"]   = df["ticker"].str.extract(r"/(.*)")
+            df["plazo_sfx"]   = df["plazo_sfx"].fillna("")
+            # Precio normalizado: para ONs, precioCierreHoy está en % (ej 151020 = 1510.20%)
+            # Para soberanos en D, está también escalado — usamos precioCierreHoy / 100
+            df["precio_cierre"] = pd.to_numeric(df.get("precioCierreHoy", 0), errors="coerce")
+            df["precio_ayer"]   = pd.to_numeric(df.get("precioCierreAyer", 0), errors="coerce")
+            df["variacion"]     = pd.to_numeric(df.get("variacion", 0), errors="coerce")
+            df["cantidad"]      = pd.to_numeric(df.get("cantidad", 0), errors="coerce")
+            df["monto"]         = pd.to_numeric(df.get("monto", 0), errors="coerce")
+            result[cod] = df
+        return result
+    except Exception as e:
+        st.session_state.setdefault("mae_errors", []).append(str(e))
+        return {}
+
+def mae_boletin_historico(ticker_base: str, dias: int = 60, plazo: str = "000"):
+    """
+    Descarga cierres diarios para un ticker iterando el boletín.
+    plazo '000' = CI, '001' = 24hs.
+    CUIDADO: genera N llamadas HTTP. Usar con caché externa o poco frecuente.
+    """
+    key = _mae_key()
+    if not key:
+        return pd.DataFrame()
+    records = []
+    today = datetime.today()
+    fechas = pd.bdate_range(end=today, periods=dias)
+    for f in fechas:
+        fecha_str = f.strftime("%Y-%m-%d")
+        try:
+            r = requests.get(
+                f"{MAE_BASE}/mercado/boletin/ReporteResumenFinal",
+                headers={"x-api-key": key},
+                params={"fecha": fecha_str},
+                timeout=15,
+            )
+            if r.status_code != 200:
+                continue
+            segs = r.json().get("segmento", [])
+            for seg in segs:
+                titulos = seg.get("titulos", {})
+                if isinstance(titulos, dict):
+                    titulos = titulos.get("value", [])
+                for t in titulos:
+                    tb = str(t.get("ticker", "")).replace(f"/{plazo}", "").split("/")[0]
+                    p_sfx = str(t.get("plazo", ""))
+                    if tb == ticker_base and p_sfx == plazo:
+                        records.append({
+                            "fecha": f.date(),
+                            "precio": float(t.get("precioCierreHoy", 0) or 0),
+                            "variacion": float(t.get("variacion", 0) or 0),
+                            "monto": float(t.get("monto", 0) or 0),
+                        })
+        except Exception:
+            continue
+    df = pd.DataFrame(records)
+    if not df.empty:
+        df = df.sort_values("fecha").drop_duplicates("fecha")
+    return df
+
+# ─── BASE DE BONOS (hardcodeada + verificable con MAE) ────────────────────────
+# Estructura: ticker_mae = ticker sin sufijo como aparece en MAE (ej "AL30D", "GD38D")
+# Para soberanos en USD: moneda = "USD", precio MAE en D (dólares cable / MEP)
+# duration y ytm se calculan on-the-fly si hay precio de mercado
+
+from scipy.optimize import brentq
+
+BONDS_DB = {
+    # ── Soberanos USD ──────────────────────────────────────────────────────────
+    "AL29": {
+        "nombre": "Bonar 2029",
+        "ticker_mae": "AL29",        # segmento 2
+        "ticker_mae_ppt": "AL29D",   # segmento 4 (con D = dólares)
+        "tipo": "Soberano",
+        "moneda": "USD",
+        "vencimiento": "2029-07-09",
+        "cupon_tna": 0.0,            # amortiza capital + intereses según schedule
+        "frecuencia_cupones": 2,     # semestral
+        "vn": 100,
+        "amortizacion": "schedule",
+        "cash_flows": [
+            # (fecha, tipo, monto_pct_vn)  — fuente: prospectus/INDEC
+            ("2024-07-09", "C+A", 4.125),
+            ("2025-01-09", "C+A", 4.125),
+            ("2025-07-09", "C+A", 12.625),
+            ("2026-01-09", "C+A", 4.125),
+            ("2026-07-09", "C+A", 12.625),
+            ("2027-01-09", "C+A", 4.125),
+            ("2027-07-09", "C+A", 12.625),
+            ("2028-01-09", "C+A", 4.125),
+            ("2028-07-09", "C+A", 12.625),
+            ("2029-01-09", "C+A", 4.125),
+            ("2029-07-09", "C+A", 30.250),
+        ],
+    },
+    "AL30": {
+        "nombre": "Bonar 2030",
+        "ticker_mae": "AL30",
+        "ticker_mae_ppt": "AL30D",
+        "tipo": "Soberano",
+        "moneda": "USD",
+        "vencimiento": "2030-07-09",
+        "cupon_tna": 0.0,
+        "frecuencia_cupones": 2,
+        "vn": 100,
+        "amortizacion": "schedule",
+        "cash_flows": [
+            ("2024-07-09", "C+A", 4.125),
+            ("2025-01-09", "C+A", 4.125),
+            ("2025-07-09", "C+A", 12.625),
+            ("2026-01-09", "C+A", 4.125),
+            ("2026-07-09", "C+A", 12.625),
+            ("2027-01-09", "C+A", 4.125),
+            ("2027-07-09", "C+A", 12.625),
+            ("2028-01-09", "C+A", 4.125),
+            ("2028-07-09", "C+A", 12.625),
+            ("2029-01-09", "C+A", 4.125),
+            ("2029-07-09", "C+A", 12.625),
+            ("2030-01-09", "C+A", 4.125),
+            ("2030-07-09", "C+A", 30.250),
+        ],
+    },
+    "GD29": {
+        "nombre": "Global 2029",
+        "ticker_mae": "GD29",
+        "ticker_mae_ppt": "GD29D",
+        "tipo": "Soberano",
+        "moneda": "USD",
+        "vencimiento": "2029-07-09",
+        "cupon_tna": 0.0,
+        "frecuencia_cupones": 2,
+        "vn": 100,
+        "amortizacion": "schedule",
+        "cash_flows": [
+            ("2024-07-09", "C+A", 4.125),
+            ("2025-01-09", "C+A", 4.125),
+            ("2025-07-09", "C+A", 12.625),
+            ("2026-01-09", "C+A", 4.125),
+            ("2026-07-09", "C+A", 12.625),
+            ("2027-01-09", "C+A", 4.125),
+            ("2027-07-09", "C+A", 12.625),
+            ("2028-01-09", "C+A", 4.125),
+            ("2028-07-09", "C+A", 12.625),
+            ("2029-01-09", "C+A", 4.125),
+            ("2029-07-09", "C+A", 30.250),
+        ],
+    },
+    "GD30": {
+        "nombre": "Global 2030",
+        "ticker_mae": "GD30",
+        "ticker_mae_ppt": "GD30D",
+        "tipo": "Soberano",
+        "moneda": "USD",
+        "vencimiento": "2030-07-09",
+        "cupon_tna": 0.0,
+        "frecuencia_cupones": 2,
+        "vn": 100,
+        "amortizacion": "schedule",
+        "cash_flows": [
+            ("2024-07-09", "C+A", 4.125),
+            ("2025-01-09", "C+A", 4.125),
+            ("2025-07-09", "C+A", 12.625),
+            ("2026-01-09", "C+A", 4.125),
+            ("2026-07-09", "C+A", 12.625),
+            ("2027-01-09", "C+A", 4.125),
+            ("2027-07-09", "C+A", 12.625),
+            ("2028-01-09", "C+A", 4.125),
+            ("2028-07-09", "C+A", 12.625),
+            ("2029-01-09", "C+A", 4.125),
+            ("2029-07-09", "C+A", 12.625),
+            ("2030-01-09", "C+A", 4.125),
+            ("2030-07-09", "C+A", 30.250),
+        ],
+    },
+    "GD35": {
+        "nombre": "Global 2035",
+        "ticker_mae": "GD35",
+        "ticker_mae_ppt": "GD35D",
+        "tipo": "Soberano",
+        "moneda": "USD",
+        "vencimiento": "2035-07-09",
+        "cupon_tna": 0.0,
+        "frecuencia_cupones": 2,
+        "vn": 100,
+        "amortizacion": "schedule",
+        "cash_flows": [
+            ("2025-01-09", "C",   3.625),
+            ("2025-07-09", "C+A", 10.125),
+            ("2026-01-09", "C",   3.625),
+            ("2026-07-09", "C+A", 10.125),
+            ("2027-01-09", "C",   3.625),
+            ("2027-07-09", "C+A", 10.125),
+            ("2028-01-09", "C",   3.625),
+            ("2028-07-09", "C+A", 10.125),
+            ("2029-01-09", "C",   3.625),
+            ("2029-07-09", "C+A", 10.125),
+            ("2030-01-09", "C",   3.625),
+            ("2030-07-09", "C+A", 10.125),
+            ("2031-01-09", "C",   3.625),
+            ("2031-07-09", "C+A", 10.125),
+            ("2032-01-09", "C",   3.625),
+            ("2032-07-09", "C+A", 10.125),
+            ("2033-01-09", "C",   3.625),
+            ("2033-07-09", "C+A", 10.125),
+            ("2034-01-09", "C",   3.625),
+            ("2034-07-09", "C+A", 10.125),
+            ("2035-01-09", "C",   3.625),
+            ("2035-07-09", "C+A", 28.125),
+        ],
+    },
+    "GD38": {
+        "nombre": "Global 2038",
+        "ticker_mae": "GD38",
+        "ticker_mae_ppt": "GD38D",
+        "tipo": "Soberano",
+        "moneda": "USD",
+        "vencimiento": "2038-01-09",
+        "cupon_tna": 0.0,
+        "frecuencia_cupones": 2,
+        "vn": 100,
+        "amortizacion": "schedule",
+        "cash_flows": [
+            ("2025-01-09", "C",   4.625),
+            ("2025-07-09", "C",   4.625),
+            ("2026-01-09", "C",   4.625),
+            ("2026-07-09", "C+A", 12.458),
+            ("2027-01-09", "C+A", 12.458),
+            ("2027-07-09", "C+A", 12.458),
+            ("2028-01-09", "C+A", 12.458),
+            ("2028-07-09", "C+A", 12.458),
+            ("2029-01-09", "C+A", 12.458),
+            ("2029-07-09", "C+A", 12.458),
+            ("2030-01-09", "C+A", 12.458),
+            ("2030-07-09", "C+A", 12.458),
+            ("2031-01-09", "C+A", 12.458),
+            ("2031-07-09", "C+A", 12.458),
+            ("2032-01-09", "C+A", 12.458),
+            ("2032-07-09", "C+A", 12.458),
+            ("2033-01-09", "C+A", 12.458),
+            ("2033-07-09", "C+A", 12.458),
+            ("2034-01-09", "C+A", 12.458),
+            ("2034-07-09", "C+A", 12.458),
+            ("2035-01-09", "C+A", 12.458),
+            ("2035-07-09", "C+A", 12.458),
+            ("2036-01-09", "C+A", 12.458),
+            ("2036-07-09", "C+A", 12.458),
+            ("2037-01-09", "C+A", 12.458),
+            ("2037-07-09", "C+A", 12.458),
+            ("2038-01-09", "C+A", 14.458),
+        ],
+    },
+    "GD41": {
+        "nombre": "Global 2041",
+        "ticker_mae": "GD41",
+        "ticker_mae_ppt": "GD41D",
+        "tipo": "Soberano",
+        "moneda": "USD",
+        "vencimiento": "2041-07-09",
+        "cupon_tna": 0.0,
+        "frecuencia_cupones": 2,
+        "vn": 100,
+        "amortizacion": "schedule",
+        "cash_flows": [
+            ("2025-01-09", "C",   4.625),
+            ("2025-07-09", "C",   4.625),
+            ("2026-01-09", "C",   4.625),
+            ("2026-07-09", "C",   4.625),
+            ("2027-01-09", "C+A", 13.625),
+            ("2027-07-09", "C+A", 13.625),
+            ("2028-01-09", "C+A", 13.625),
+            ("2028-07-09", "C+A", 13.625),
+            ("2029-01-09", "C+A", 13.625),
+            ("2029-07-09", "C+A", 13.625),
+            ("2030-01-09", "C+A", 13.625),
+            ("2030-07-09", "C+A", 13.625),
+            ("2031-01-09", "C+A", 13.625),
+            ("2031-07-09", "C+A", 13.625),
+            ("2032-01-09", "C+A", 13.625),
+            ("2032-07-09", "C+A", 13.625),
+            ("2033-01-09", "C+A", 13.625),
+            ("2033-07-09", "C+A", 13.625),
+            ("2034-01-09", "C+A", 13.625),
+            ("2034-07-09", "C+A", 13.625),
+            ("2035-01-09", "C+A", 13.625),
+            ("2035-07-09", "C+A", 13.625),
+            ("2036-01-09", "C+A", 13.625),
+            ("2036-07-09", "C+A", 13.625),
+            ("2037-01-09", "C+A", 13.625),
+            ("2037-07-09", "C+A", 13.625),
+            ("2038-01-09", "C+A", 13.625),
+            ("2038-07-09", "C+A", 13.625),
+            ("2039-01-09", "C+A", 13.625),
+            ("2039-07-09", "C+A", 13.625),
+            ("2040-01-09", "C+A", 13.625),
+            ("2040-07-09", "C+A", 13.625),
+            ("2041-01-09", "C+A", 13.625),
+            ("2041-07-09", "C+A", 18.625),
+        ],
+    },
+    # ── ON corporativa ejemplo: Tecpetrol Clase 11 ─────────────────────────────
+    "TPCO": {
+        "nombre": "Tecpetrol ON Cl.11",
+        "ticker_mae": "TPCO",        # ticker real MAE — confirmar
+        "ticker_mae_ppt": None,
+        "tipo": "ON Corporativa",
+        "emisor": "Tecpetrol",
+        "sector": "Oil & Gas",
+        "moneda": "USD",
+        "vencimiento": "2027-10-16",
+        "emision":     "2025-10-16",
+        "cupon_tna": 0.065,          # 6.50% TNA Actual/365 bullet
+        "frecuencia_cupones": 2,
+        "vn": 100,
+        "amortizacion": "bullet",
+        "call": {"desde": "2026-10-16", "precio": 100},
+        "cash_flows": [
+            ("2026-04-16", "C", 3.25),
+            ("2026-10-16", "C", 3.25),
+            ("2027-04-16", "C", 3.25),
+            ("2027-10-16", "C+A", 103.25),
+        ],
+    },
+}
+
+# ─── BOND MATH ────────────────────────────────────────────────────────────────
+
+def _bond_future_cfs(bond_key: str, settlement: datetime = None):
+    """Retorna lista de (dias_hasta_cf, flujo_pct_vn) para flujos futuros."""
+    if settlement is None:
+        settlement = datetime.today()
+    b = BONDS_DB[bond_key]
+    cfs = []
+    for fecha_str, tipo, monto in b["cash_flows"]:
+        cf_date = datetime.strptime(fecha_str, "%Y-%m-%d")
+        if cf_date > settlement:
+            dias = (cf_date - settlement).days
+            cfs.append((dias, monto))
+    return cfs
+
+def _ytm(bond_key: str, precio_sucio: float, settlement: datetime = None):
+    """YTM anualizada (Act/365) por Newton-Brentq."""
+    cfs = _bond_future_cfs(bond_key, settlement)
+    if not cfs or precio_sucio <= 0:
+        return None
+    def f(y):
+        return sum(cf / (1 + y) ** (d / 365) for d, cf in cfs) - precio_sucio
+    try:
+        return brentq(f, -0.5, 10.0, maxiter=200)
+    except Exception:
+        return None
+
+def _cupon_corrido(bond_key: str, settlement: datetime = None):
+    """Cupón corrido como % del VN."""
+    if settlement is None:
+        settlement = datetime.today()
+    b = BONDS_DB[bond_key]
+    cfs_all = [(datetime.strptime(f, "%Y-%m-%d"), m)
+               for f, _, m in b["cash_flows"]]
+    # Encontrar el cupón anterior y el siguiente
+    pasados  = [(d, m) for d, m in cfs_all if d <= settlement]
+    futuros  = [(d, m) for d, m in cfs_all if d > settlement]
+    if not pasados or not futuros:
+        return 0.0
+    ultimo_cf  = max(pasados, key=lambda x: x[0])[0]
+    proximo_cf = min(futuros, key=lambda x: x[0])
+    dias_periodo = (proximo_cf[0] - ultimo_cf).days
+    dias_corridos = (settlement - ultimo_cf).days
+    if dias_periodo <= 0:
+        return 0.0
+    cupon_periodo = proximo_cf[1] if "A" not in dict(
+        [(datetime.strptime(f, "%Y-%m-%d"), t) for f, t, _ in b["cash_flows"]]
+    ).get(proximo_cf[0], "") else b["cupon_tna"] * 100 / b["frecuencia_cupones"]
+    return cupon_periodo * dias_corridos / dias_periodo
+
+def _duration_macaulay(bond_key: str, precio_sucio: float, settlement: datetime = None):
+    """Duration Macaulay en años."""
+    cfs = _bond_future_cfs(bond_key, settlement)
+    if not cfs or precio_sucio <= 0:
+        return None
+    ytm = _ytm(bond_key, precio_sucio, settlement)
+    if ytm is None:
+        return None
+    pv_total = sum(cf / (1 + ytm) ** (d / 365) for d, cf in cfs)
+    if pv_total <= 0:
+        return None
+    dur = sum((d / 365) * (cf / (1 + ytm) ** (d / 365)) for d, cf in cfs) / pv_total
+    return dur
+
+def _precio_sucio_from_ytm(bond_key: str, ytm_target: float, settlement: datetime = None):
+    """Precio sucio dado un YTM objetivo."""
+    cfs = _bond_future_cfs(bond_key, settlement)
+    return sum(cf / (1 + ytm_target) ** (d / 365) for d, cf in cfs)
+
 # ─── FMP HELPERS (price target consensus only — other endpoints are premium) ──
 
 def _fmp_key():
@@ -653,8 +1121,8 @@ with st.spinner("Cargando datos de mercado..."):
 
 st.title("📊 Dashboard")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "Resumen", "Valuación", "Fundamentals", "Analistas", "Rendimiento & Corr"
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "Resumen", "Valuación", "Fundamentals", "Analistas", "Rendimiento & Corr", "🏦 Renta Fija"
 ])
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1326,3 +1794,579 @@ with tab5:
                           zmin=-1, zmax=1, aspect="auto")
     fig_corr.update_layout(height=500, template="plotly_white")
     st.plotly_chart(fig_corr, use_container_width=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 6 — RENTA FIJA (MAE API)
+# ══════════════════════════════════════════════════════════════════════════════
+
+with tab6:
+    st.subheader("🏦 Renta Fija Argentina")
+
+    # ── API Key MAE ───────────────────────────────────────────────────────────
+    with st.sidebar:
+        st.divider()
+        st.subheader("🏦 MAE API Key")
+        mae_input = st.text_input(
+            "MAE API Key (A3 Mercados)",
+            type="password",
+            value=st.session_state.get("mae_api_key", ""),
+            help="API Key de A3 Mercados / MAE para datos de renta fija",
+        )
+        if mae_input:
+            st.session_state["mae_api_key"] = mae_input
+            st.success("MAE Key cargada ✓")
+        elif not _mae_key():
+            st.warning("Sin MAE Key: datos de renta fija no disponibles.")
+
+        if st.checkbox("🔍 Errores MAE", value=False):
+            errs = st.session_state.get("mae_errors", [])
+            if errs:
+                for e in errs[-5:]:
+                    st.code(e)
+            else:
+                st.success("Sin errores MAE")
+
+    has_mae = bool(_mae_key())
+
+    rf_tab1, rf_tab2, rf_tab3, rf_tab4 = st.tabs([
+        "📡 Mercado Hoy", "📊 Análisis de Bonos", "📈 ONs Corporativas", "💼 Mi Cartera RF"
+    ])
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RF TAB 1 — MERCADO HOY (cotizaciones intraday)
+    # ══════════════════════════════════════════════════════════════════════════
+    with rf_tab1:
+        st.markdown("#### Cotizaciones intraday — Segmento Garantizado PPT")
+
+        if not has_mae:
+            st.info("Ingresá la MAE API Key en el sidebar para ver datos en tiempo real.")
+        else:
+            df_hoy = mae_cotizaciones_hoy()
+
+            if df_hoy.empty:
+                st.warning("Sin datos intraday. Puede ser fuera de horario o error de conexión.")
+            else:
+                # Filtrar: solo /CI y con precio > 0
+                df_ci = df_hoy[
+                    (df_hoy["plazo_sfx"] == "CI") &
+                    (df_hoy["precioUltimo"] > 0)
+                ].copy()
+
+                if df_ci.empty:
+                    st.warning("Sin cotizaciones CI activas.")
+                else:
+                    # Clasificar
+                    def _clasificar(ticker):
+                        t = ticker.upper()
+                        if t.startswith("GD"):   return "Global"
+                        if t.startswith("AL"):   return "Bonar"
+                        if t.startswith("AE"):   return "AE"
+                        if t.startswith("TX"):   return "CER"
+                        if t.startswith("X"):    return "Dollar-linked"
+                        if t.startswith("S") or t.startswith("T") or t.startswith("B"):
+                            return "Lecap/Boncap"
+                        return "Otro"
+
+                    df_ci["clase"] = df_ci["ticker_base"].apply(_clasificar)
+                    df_ci["var_pct"] = pd.to_numeric(df_ci.get("variacion", 0), errors="coerce")
+                    df_ci["precio"] = pd.to_numeric(df_ci["precioUltimo"], errors="coerce")
+                    df_ci["precio_ayer"] = pd.to_numeric(df_ci["precioCierreAnterior"], errors="coerce")
+
+                    # Filtro por clase
+                    clases_disp = sorted(df_ci["clase"].unique())
+                    clases_sel = st.multiselect(
+                        "Filtrar por clase",
+                        clases_disp,
+                        default=["Global", "Bonar"],
+                        key="rf_clase_filter",
+                    )
+                    df_show = df_ci[df_ci["clase"].isin(clases_sel)] if clases_sel else df_ci
+
+                    # Tabla
+                    cols_show = ["ticker_base", "clase", "moneda", "precio", "precio_ayer", "var_pct",
+                                 "volumenAcumulado", "montoAcumulado"]
+                    cols_exist = [c for c in cols_show if c in df_show.columns]
+                    df_disp = df_show[cols_exist].rename(columns={
+                        "ticker_base": "Ticker",
+                        "clase": "Clase",
+                        "moneda": "Moneda",
+                        "precio": "Precio CI",
+                        "precio_ayer": "Cierre Ayer",
+                        "var_pct": "Var. %",
+                        "volumenAcumulado": "Vol. (VN)",
+                        "montoAcumulado": "Monto",
+                    }).sort_values("Var. %", ascending=False)
+
+                    def _color_var(val):
+                        if pd.isna(val): return ""
+                        return "color: #00cc88" if val > 0 else ("color: #ff4b4b" if val < 0 else "")
+
+                    st.dataframe(
+                        df_disp.style.applymap(_color_var, subset=["Var. %"])
+                               .format({"Precio CI": "{:.4f}", "Cierre Ayer": "{:.4f}", "Var. %": "{:.2f}%"}),
+                        use_container_width=True,
+                        height=400,
+                    )
+                    st.caption(f"Fuente: MAE API · {len(df_show)} instrumentos · Actualizado c/5 min")
+
+                    # Gráfico variaciones
+                    if len(df_show) > 1:
+                        df_bar = df_show.nlargest(20, "var_pct")
+                        fig_var = go.Figure(go.Bar(
+                            x=df_bar["ticker_base"],
+                            y=df_bar["var_pct"],
+                            marker_color=["#00cc88" if v >= 0 else "#ff4b4b"
+                                          for v in df_bar["var_pct"]],
+                            text=df_bar["var_pct"].round(2).astype(str) + "%",
+                            textposition="outside",
+                        ))
+                        fig_var.update_layout(
+                            title="Top 20 variaciones diarias",
+                            yaxis_title="Variación %",
+                            xaxis_tickangle=-45,
+                            height=380,
+                            template="plotly_white",
+                        )
+                        st.plotly_chart(fig_var, use_container_width=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RF TAB 2 — ANÁLISIS DE BONOS (soberanos con math)
+    # ══════════════════════════════════════════════════════════════════════════
+    with rf_tab2:
+        st.markdown("#### Análisis cuantitativo — Soberanos USD")
+
+        soberanos = {k: v for k, v in BONDS_DB.items() if v["tipo"] == "Soberano"}
+        bond_sel = st.selectbox(
+            "Seleccionar bono",
+            list(soberanos.keys()),
+            format_func=lambda k: f"{k} — {BONDS_DB[k]['nombre']}",
+            key="rf_bond_sel",
+        )
+
+        b = BONDS_DB[bond_sel]
+        hoy = datetime.today()
+
+        # Obtener precio de mercado desde boletín si hay key
+        precio_mercado = None
+        if has_mae:
+            fecha_boletin = (hoy - timedelta(days=1)).strftime("%Y-%m-%d")
+            # Ajustar si es lunes
+            dow = hoy.weekday()
+            if dow == 0:
+                fecha_boletin = (hoy - timedelta(days=3)).strftime("%Y-%m-%d")
+            boletin = mae_boletin(fecha_boletin)
+            # Buscar en segmento 2 (soberanos MAE) o 4 (PPT)
+            for seg_id in [MAE_SEG_SOBERANOS_MAE, MAE_SEG_SOBERANOS_PPT]:
+                if seg_id in boletin:
+                    df_seg = boletin[seg_id]
+                    # Buscar ticker
+                    mask_base = df_seg["ticker_base"].str.upper() == bond_sel.upper()
+                    mask_ppt  = df_seg["ticker_base"].str.upper() == b.get("ticker_mae_ppt", "").upper()
+                    fila = df_seg[(mask_base | mask_ppt) & (df_seg["plazo"].astype(str) == "000")]
+                    if not fila.empty:
+                        raw_p = float(fila.iloc[0].get("precioCierreHoy", 0) or 0)
+                        if raw_p > 0:
+                            # En segmento 4 los soberanos D vienen como ratio (ej 0.829)
+                            # En segmento 2 como precio % VN (ej 67.5)
+                            if seg_id == MAE_SEG_SOBERANOS_PPT and raw_p < 5:
+                                precio_mercado = raw_p * 100  # convertir a % VN
+                            elif seg_id == MAE_SEG_SOBERANOS_MAE:
+                                precio_mercado = raw_p
+                            else:
+                                precio_mercado = raw_p
+                        break
+
+        # Input precio
+        c1, c2 = st.columns([1, 3])
+        with c1:
+            precio_input = st.number_input(
+                "Precio limpio (% VN)",
+                min_value=0.1,
+                max_value=200.0,
+                value=float(round(precio_mercado, 2)) if precio_mercado and precio_mercado > 0 else 65.0,
+                step=0.01,
+                format="%.2f",
+                key="rf_precio_input",
+                help="Precio sucio = precio limpio + cupón corrido"
+            )
+            if precio_mercado and precio_mercado > 0:
+                st.caption(f"📡 MAE: {precio_mercado:.2f}")
+
+        cupon_corrido = _cupon_corrido(bond_sel, hoy)
+        precio_sucio  = precio_input + cupon_corrido
+        ytm           = _ytm(bond_sel, precio_sucio, hoy)
+        dur_mac       = _duration_macaulay(bond_sel, precio_sucio, hoy)
+        dur_mod       = (dur_mac / (1 + ytm)) if (dur_mac and ytm is not None) else None
+        venc          = datetime.strptime(b["vencimiento"], "%Y-%m-%d")
+        dias_venc     = (venc - hoy).days
+
+        with c2:
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            m1.metric("Precio Limpio",  f"{precio_input:.2f}")
+            m2.metric("Cupón Corrido",  f"{cupon_corrido:.4f}")
+            m3.metric("Precio Sucio",   f"{precio_sucio:.4f}")
+            m4.metric("YTM",            f"{ytm*100:.2f}%" if ytm is not None else "N/D")
+            m5.metric("Duration Mac.",  f"{dur_mac:.2f} años" if dur_mac else "N/D")
+            m6.metric("Duration Mod.",  f"{dur_mod:.2f}" if dur_mod else "N/D")
+
+        st.divider()
+
+        # Cash flows futuros
+        st.markdown("**Flujos de fondos futuros**")
+        cfs_raw = [(datetime.strptime(f, "%Y-%m-%d"), t, m) for f, t, m in b["cash_flows"]]
+        cfs_fut = [(d, t, m) for d, t, m in cfs_raw if d > hoy]
+        cfs_pas = [(d, t, m) for d, t, m in cfs_raw if d <= hoy]
+
+        df_cf = pd.DataFrame(cfs_fut, columns=["Fecha", "Tipo", "Flujo (% VN)"])
+        df_cf["Días"] = (df_cf["Fecha"] - hoy).dt.days
+        df_cf["VP"] = df_cf.apply(
+            lambda row: row["Flujo (% VN)"] / (1 + ytm) ** (row["Días"] / 365)
+            if ytm is not None else row["Flujo (% VN)"],
+            axis=1,
+        )
+        df_cf["Vencido"] = False
+
+        df_cf_pas = pd.DataFrame(cfs_pas, columns=["Fecha", "Tipo", "Flujo (% VN)"])
+        if not df_cf_pas.empty:
+            df_cf_pas["Días"] = (df_cf_pas["Fecha"] - hoy).dt.days
+            df_cf_pas["VP"] = 0.0
+            df_cf_pas["Vencido"] = True
+            df_cf_all = pd.concat([df_cf_pas, df_cf], ignore_index=True)
+        else:
+            df_cf_all = df_cf.copy()
+
+        df_cf_all["Fecha"] = df_cf_all["Fecha"].dt.strftime("%Y-%m-%d")
+
+        def _highlight_venc(row):
+            if row.get("Vencido", False):
+                return ["color: #888888"] * len(row)
+            return [""] * len(row)
+
+        st.dataframe(
+            df_cf_all.style.apply(_highlight_venc, axis=1)
+                     .format({"Flujo (% VN)": "{:.4f}", "VP": "{:.4f}"}),
+            use_container_width=True,
+            height=300,
+        )
+        st.caption(f"Flujos pasados en gris. Precio sucio teórico = Σ VP = {df_cf['VP'].sum():.4f}")
+
+        st.divider()
+
+        # Curva precio-YTM
+        st.markdown("**Sensibilidad precio / YTM**")
+        ytm_range = np.linspace(0.03, 0.30, 80)
+        precios_curva = [_precio_sucio_from_ytm(bond_sel, y, hoy) for y in ytm_range]
+        fig_sens = go.Figure()
+        fig_sens.add_trace(go.Scatter(
+            x=ytm_range * 100, y=precios_curva,
+            mode="lines", name="Precio (% VN)",
+            line=dict(color="#636EFA", width=2),
+        ))
+        if ytm is not None:
+            fig_sens.add_vline(
+                x=ytm * 100, line_dash="dash", line_color="red",
+                annotation_text=f"YTM actual: {ytm*100:.2f}%",
+                annotation_position="top right",
+            )
+        fig_sens.update_layout(
+            xaxis_title="YTM (%)", yaxis_title="Precio sucio (% VN)",
+            height=380, template="plotly_white",
+        )
+        st.plotly_chart(fig_sens, use_container_width=True)
+
+        # Tabla comparativa soberanos
+        st.markdown("**Comparativa soberanos** (precio manual o MAE)")
+        comp_data = []
+        for k, bv in soberanos.items():
+            vv = datetime.strptime(bv["vencimiento"], "%Y-%m-%d")
+            dias_v = (vv - hoy).days
+            # Usar precio input solo para el bono seleccionado; los demás con precio supuesto
+            if k == bond_sel:
+                ps = precio_sucio
+            else:
+                ps = 65.0 + _cupon_corrido(k, hoy)  # placeholder
+            y = _ytm(k, ps, hoy)
+            dm = _duration_macaulay(k, ps, hoy)
+            comp_data.append({
+                "Ticker": k,
+                "Nombre": bv["nombre"],
+                "Vcto.": bv["vencimiento"],
+                "Años": round(dias_v / 365, 1),
+                "Precio (%)": round(ps - _cupon_corrido(k, hoy), 2),
+                "YTM (%)": round(y * 100, 2) if y else None,
+                "Duration": round(dm, 2) if dm else None,
+            })
+        df_comp = pd.DataFrame(comp_data)
+        st.dataframe(df_comp, use_container_width=True, hide_index=True)
+        st.caption("⚠️ Precios de otros bonos son placeholders (65%). Actualizar con precios reales.")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RF TAB 3 — ONs CORPORATIVAS
+    # ══════════════════════════════════════════════════════════════════════════
+    with rf_tab3:
+        st.markdown("#### Obligaciones Negociables Corporativas — MAE Segmento 5")
+
+        if not has_mae:
+            st.info("Ingresá la MAE API Key en el sidebar.")
+        else:
+            hoy_str = datetime.today().strftime("%Y-%m-%d")
+            dow = datetime.today().weekday()
+            if dow == 0:
+                fetch_date = (datetime.today() - timedelta(days=3)).strftime("%Y-%m-%d")
+            elif dow == 6:
+                fetch_date = (datetime.today() - timedelta(days=2)).strftime("%Y-%m-%d")
+            else:
+                fetch_date = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+            boletin_data = mae_boletin(fetch_date)
+
+            if MAE_SEG_ONS not in boletin_data:
+                st.warning(f"Sin datos de ONs para {fetch_date}. Intentá con otra fecha.")
+                fecha_manual = st.date_input("Fecha alternativa", key="rf_fecha_on")
+                if st.button("Cargar", key="rf_load_on"):
+                    boletin_data = mae_boletin(str(fecha_manual))
+            
+            if MAE_SEG_ONS in boletin_data:
+                df_ons = boletin_data[MAE_SEG_ONS].copy()
+
+                # Filtrar: solo plazo CI (000) y precio > 0
+                df_ons_ci = df_ons[
+                    (df_ons["plazo"].astype(str) == "000") &
+                    (df_ons["precio_cierre"] > 0)
+                ].copy()
+
+                # Normalizar precio: en segmento 5 viene como 100x (ej. 151020 = 1510.20 = 15.102% ??)
+                # Revisando los datos: VSCOO precioCierreHoy=148550, precioPromedioPonderado=1485.5
+                # → precioCierreHoy = precioPromedioPonderado * 100
+                # → precio real en % VN = precioPromedioPonderado (ej. 1485.5 = 1485.5% = 14.855 sobre VN 100?)
+                # Para ONs USD bullet: precio en % VN típicamente 90-110
+                # precioCierreHoy=102 para T662OD → precio=1.02 → 102% VN ✓ (moneda D)
+                # precioCierreHoy=148550 para VSCOO (moneda $) → 148550/100 = 1485.5 = precio en pesos?
+                # Concluimos: para moneda D → precioCierreHoy = precio % VN directamente
+                #             para moneda $ → precio en pesos nominales
+                def _precio_on(row):
+                    if row["monedaCodigo"] == "D":
+                        return row["precio_cierre"]   # ya en % VN
+                    else:
+                        return row["precio_cierre"]   # en pesos — no normalizable sin TC
+
+                df_ons_ci["precio_norm"] = df_ons_ci.apply(_precio_on, axis=1)
+
+                # Filtros UI
+                col_f1, col_f2 = st.columns(2)
+                with col_f1:
+                    mon_filter = st.multiselect(
+                        "Moneda", df_ons_ci["monedaCodigo"].unique().tolist(),
+                        default=["D"],
+                        key="rf_on_moneda",
+                    )
+                with col_f2:
+                    min_monto = st.number_input(
+                        "Monto mínimo (USD / ARS)", value=0.0, step=1000.0, key="rf_on_monto"
+                    )
+
+                df_f = df_ons_ci[df_ons_ci["monedaCodigo"].isin(mon_filter)] if mon_filter else df_ons_ci
+                if min_monto > 0:
+                    df_f = df_f[df_f["monto"] >= min_monto]
+
+                if df_f.empty:
+                    st.warning("Sin datos con los filtros seleccionados.")
+                else:
+                    cols_on = ["ticker_base", "monedaCodigo", "precio_norm", "precio_ayer",
+                               "variacion", "cantidad", "monto"]
+                    cols_on_ex = [c for c in cols_on if c in df_f.columns]
+                    df_on_disp = df_f[cols_on_ex].rename(columns={
+                        "ticker_base": "Ticker",
+                        "monedaCodigo": "Moneda",
+                        "precio_norm": "Precio",
+                        "precio_ayer": "Cierre Ayer",
+                        "variacion": "Var. %",
+                        "cantidad": "Cantidad (VN)",
+                        "monto": "Monto",
+                    }).sort_values("Monto", ascending=False)
+
+                    st.dataframe(
+                        df_on_disp.style.applymap(_color_var, subset=["Var. %"])
+                                  .format({"Precio": "{:.4f}", "Var. %": "{:.2f}%"}),
+                        use_container_width=True,
+                        height=420,
+                    )
+                    st.caption(f"Fuente: MAE Boletín {fetch_date} · {len(df_f)} ONs · Segmento 5")
+
+                    # Buscar TPCO (Tecpetrol) si está
+                    tpco_row = df_f[df_f["ticker_base"].str.upper().str.contains("TPCO|TPC", na=False)]
+                    if not tpco_row.empty:
+                        st.success(f"✅ TPCO encontrado en MAE: precio {tpco_row.iloc[0]['precio_norm']:.4f}")
+
+                    # Gráfico: distribución de precios ONs USD
+                    df_usd = df_f[df_f["monedaCodigo"] == "D"].copy()
+                    if len(df_usd) > 3:
+                        fig_hist = go.Figure(go.Histogram(
+                            x=df_usd["precio_norm"],
+                            nbinsx=20,
+                            marker_color="#636EFA",
+                            opacity=0.75,
+                        ))
+                        fig_hist.update_layout(
+                            title="Distribución de precios — ONs USD",
+                            xaxis_title="Precio (% VN)",
+                            yaxis_title="Cantidad de ONs",
+                            height=320,
+                            template="plotly_white",
+                        )
+                        st.plotly_chart(fig_hist, use_container_width=True)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RF TAB 4 — MI CARTERA RF
+    # ══════════════════════════════════════════════════════════════════════════
+    with rf_tab4:
+        st.markdown("#### Cartera de Renta Fija")
+        st.caption("Registrá tu posición en bonos y ONs para tracking de P&L y analytics.")
+
+        # Inicializar cartera RF en session state
+        if "cartera_rf" not in st.session_state:
+            st.session_state["cartera_rf"] = []
+
+        # ── Agregar posición ──────────────────────────────────────────────────
+        with st.expander("➕ Agregar posición", expanded=len(st.session_state["cartera_rf"]) == 0):
+            ca1, ca2, ca3, ca4, ca5 = st.columns(5)
+            with ca1:
+                bond_options = list(BONDS_DB.keys()) + ["OTRO"]
+                pos_ticker = st.selectbox("Instrumento", bond_options, key="rf_pos_ticker")
+            with ca2:
+                pos_vn = st.number_input("VN ($)", min_value=100.0, value=10000.0, step=100.0, key="rf_pos_vn")
+            with ca3:
+                pos_precio_compra = st.number_input("Precio compra (% VN)", min_value=0.1, value=65.0, step=0.01, key="rf_pos_pc")
+            with ca4:
+                pos_fecha = st.date_input("Fecha compra", key="rf_pos_fecha")
+            with ca5:
+                pos_moneda = st.selectbox("Moneda", ["USD", "ARS"], key="rf_pos_moneda")
+
+            if st.button("Agregar posición", key="rf_add_pos"):
+                st.session_state["cartera_rf"].append({
+                    "ticker": pos_ticker,
+                    "vn": pos_vn,
+                    "precio_compra": pos_precio_compra,
+                    "fecha_compra": str(pos_fecha),
+                    "moneda": pos_moneda,
+                    "costo_total": pos_vn * pos_precio_compra / 100,
+                })
+                st.success(f"✅ {pos_ticker} agregado — VN {pos_vn:,.0f} a {pos_precio_compra:.2f}%")
+                st.rerun()
+
+        # ── Tabla de posiciones ───────────────────────────────────────────────
+        cartera = st.session_state["cartera_rf"]
+        if not cartera:
+            st.info("Sin posiciones registradas. Usá el panel de arriba para agregar.")
+        else:
+            rows = []
+            for i, pos in enumerate(cartera):
+                tk = pos["ticker"]
+                b_data = BONDS_DB.get(tk, {})
+                costo = pos["costo_total"]
+
+                # Precio actual: intentar desde MAE si disponible
+                precio_actual = None
+                if has_mae and b_data:
+                    fetch_d = (datetime.today() - timedelta(days=1))
+                    if fetch_d.weekday() >= 5:
+                        fetch_d -= timedelta(days=fetch_d.weekday() - 4)
+                    boletin_c = mae_boletin(fetch_d.strftime("%Y-%m-%d"))
+                    for seg_id in [MAE_SEG_SOBERANOS_MAE, MAE_SEG_SOBERANOS_PPT, MAE_SEG_ONS]:
+                        if seg_id not in boletin_c:
+                            continue
+                        df_s = boletin_c[seg_id]
+                        fila = df_s[
+                            (df_s["ticker_base"].str.upper() == tk.upper()) &
+                            (df_s["plazo"].astype(str) == "000") &
+                            (df_s["precio_cierre"] > 0)
+                        ]
+                        if not fila.empty:
+                            raw = float(fila.iloc[0]["precio_cierre"])
+                            if seg_id == MAE_SEG_SOBERANOS_PPT and raw < 5:
+                                precio_actual = raw * 100
+                            else:
+                                precio_actual = raw
+                            break
+
+                precio_actual = precio_actual or pos["precio_compra"]
+                cc = _cupon_corrido(tk, datetime.today()) if tk in BONDS_DB else 0.0
+                ps_actual = precio_actual + cc
+                valor_actual = pos["vn"] * ps_actual / 100
+                pnl_abs = valor_actual - costo
+                pnl_pct = pnl_abs / costo * 100 if costo > 0 else 0
+
+                ytm_actual = _ytm(tk, ps_actual, datetime.today()) if tk in BONDS_DB else None
+                dur = _duration_macaulay(tk, ps_actual, datetime.today()) if tk in BONDS_DB else None
+
+                rows.append({
+                    "Ticker": tk,
+                    "VN": pos["vn"],
+                    "P. Compra": pos["precio_compra"],
+                    "P. Actual": round(precio_actual, 2),
+                    "CC": round(cc, 4),
+                    "Costo Total": round(costo, 2),
+                    "Valor Actual": round(valor_actual, 2),
+                    "P&L ($)": round(pnl_abs, 2),
+                    "P&L (%)": round(pnl_pct, 2),
+                    "YTM (%)": round(ytm_actual * 100, 2) if ytm_actual else None,
+                    "Duration": round(dur, 2) if dur else None,
+                    "Moneda": pos["moneda"],
+                    "Origen precio": "MAE" if precio_actual != pos["precio_compra"] else "Manual",
+                })
+                rows[-1]["_idx"] = i
+
+            df_cartera = pd.DataFrame(rows)
+            idx_col = "_idx"
+
+            def _color_pnl(val):
+                if pd.isna(val): return ""
+                return "color: #00cc88" if val > 0 else ("color: #ff4b4b" if val < 0 else "")
+
+            st.dataframe(
+                df_cartera.drop(columns=[idx_col]).style
+                    .applymap(_color_pnl, subset=["P&L ($)", "P&L (%)"])
+                    .format({
+                        "VN": "{:,.0f}",
+                        "P. Compra": "{:.2f}",
+                        "P. Actual": "{:.2f}",
+                        "CC": "{:.4f}",
+                        "Costo Total": "{:,.2f}",
+                        "Valor Actual": "{:,.2f}",
+                        "P&L ($)": "{:,.2f}",
+                        "P&L (%)": "{:.2f}%",
+                    }),
+                use_container_width=True,
+                height=300,
+            )
+
+            # Resumen cartera
+            total_costo  = df_cartera["Costo Total"].sum()
+            total_valor  = df_cartera["Valor Actual"].sum()
+            total_pnl    = total_valor - total_costo
+            total_pnl_pct = total_pnl / total_costo * 100 if total_costo > 0 else 0
+            dur_pond = (
+                (df_cartera["Duration"] * df_cartera["Valor Actual"]).sum() /
+                df_cartera["Valor Actual"].sum()
+            ) if df_cartera["Duration"].notna().any() else None
+
+            st.divider()
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("Costo total",     f"${total_costo:,.2f}")
+            r2.metric("Valor actual",    f"${total_valor:,.2f}", f"{total_pnl_pct:+.2f}%")
+            r3.metric("P&L total",       f"${total_pnl:+,.2f}")
+            r4.metric("Duration pond.",  f"{dur_pond:.2f} años" if dur_pond else "N/D")
+
+            # Eliminar posición
+            st.divider()
+            st.markdown("**Eliminar posición**")
+            del_idx = st.selectbox(
+                "Seleccionar posición a eliminar",
+                options=list(range(len(cartera))),
+                format_func=lambda i: f"{cartera[i]['ticker']} — VN {cartera[i]['vn']:,.0f}",
+                key="rf_del_sel",
+            )
+            if st.button("🗑️ Eliminar posición seleccionada", key="rf_del_btn"):
+                st.session_state["cartera_rf"].pop(del_idx)
+                st.success("Posición eliminada.")
+                st.rerun()
