@@ -36,6 +36,18 @@ MAE_SEG_SOBERANOS_PPT = "4"   # AL30D/CI, AE38D/CI, GD38D/CI …
 MAE_SEG_ONS           = "5"   # Obligaciones Negociables corporativas
 MAE_SEG_SOBERANOS_MAE = "2"   # AL29, AL30, GD29 … (sin sufijo plazo)
 
+MAE_HEADERS_EXTRA = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "es-AR,es;q=0.9,en;q=0.8",
+    "Referer": "https://www.mae.com.ar/",
+    "Origin": "https://www.mae.com.ar",
+}
+
 def _mae_key():
     try:
         k = st.secrets.get("MAE_API_KEY", "")
@@ -54,7 +66,7 @@ def mae_cotizaciones_hoy():
     try:
         r = requests.get(
             f"{MAE_BASE}/mercado/cotizaciones/rentafija",
-            headers={"x-api-key": key},
+            headers={"x-api-key": key, **MAE_HEADERS_EXTRA},
             timeout=15,
         )
         r.raise_for_status()
@@ -83,7 +95,7 @@ def mae_boletin(fecha: str):
     try:
         r = requests.get(
             f"{MAE_BASE}/mercado/boletin/ReporteResumenFinal",
-            headers={"x-api-key": key},
+            headers={"x-api-key": key, **MAE_HEADERS_EXTRA},
             params={"fecha": fecha},
             timeout=20,
         )
@@ -136,7 +148,7 @@ def mae_boletin_historico(ticker_base: str, dias: int = 60, plazo: str = "000"):
         try:
             r = requests.get(
                 f"{MAE_BASE}/mercado/boletin/ReporteResumenFinal",
-                headers={"x-api-key": key},
+                headers={"x-api-key": key, **MAE_HEADERS_EXTRA},
                 params={"fecha": fecha_str},
                 timeout=15,
             )
