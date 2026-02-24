@@ -57,30 +57,55 @@ def _mae_key():
         pass
     return st.session_state.get("mae_api_key", "")
 
-@st.cache_data(ttl=300)
-def mae_cotizaciones_hoy():
-    """Cotizaciones intraday renta fija — segmento GP (soberanos garantizado PPT)."""
-    key = _mae_key()
-    if not key:
-        return pd.DataFrame()
+D912_BASE = "https://data912.com"
+
+@st.cache_data(ttl=120)
+def d912_live_bonds():
+    """
+    Cotizaciones en tiempo real — data912.com/live/arg_bonds.
+    Sin autenticacion. Campos: symbol, px_bid, px_ask, c, pct_change, v, q_op.
+    TTL 2 min.
+    """
     try:
-        r = requests.get(
-            f"{MAE_BASE}/mercado/cotizaciones/rentafija",
-            headers={"x-api-key": key, **MAE_HEADERS_EXTRA},
-            timeout=15,
-        )
+        r = requests.get(f"{D912_BASE}/live/arg_bonds", timeout=15)
         r.raise_for_status()
-        raw = r.json().get("value", [])
-        df = pd.DataFrame([x for x in raw if x.get("ticker")])
+        raw = r.json()
+        if isinstance(raw, dict):
+            raw = raw.get("value", raw.get("data", []))
+        df = pd.DataFrame(raw)
         if df.empty:
             return df
-        # Normalizar: separar ticker base del sufijo /CI /24hs
-        df["ticker_base"] = df["ticker"].str.replace(r"/.*$", "", regex=True)
-        df["plazo_sfx"]   = df["ticker"].str.extract(r"/(.*)")
+        df = df[df["symbol"].notna() & (df["symbol"] != "")]
         return df
     except Exception as e:
-        st.session_state.setdefault("mae_errors", []).append(str(e))
+        st.session_state.setdefault("d912_errors", []).append(str(e))
         return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def d912_historical(symbol: str):
+    """
+    Serie historica OHLCV para un simbolo.
+    Campos: date, o, h, l, c, v, dr (daily return), sa.
+    """
+    try:
+        r = requests.get(f"{D912_BASE}/historical/bonds/{symbol}", timeout=20)
+        r.raise_for_status()
+        raw = r.json()
+        if isinstance(raw, dict):
+            raw = raw.get("value", raw.get("data", []))
+        df = pd.DataFrame(raw)
+        if df.empty:
+            return df
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").reset_index(drop=True)
+        return df
+    except Exception as e:
+        st.session_state.setdefault("d912_errors", []).append(str(e))
+        return pd.DataFrame()
+
+def mae_cotizaciones_hoy():
+    """Wrapper legacy — deprecado, usar d912_live_bonds()."""
+    return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def mae_boletin(fecha: str):
@@ -468,26 +493,55 @@ def _ytm(bond_key: str, precio_sucio: float, settlement: datetime = None):
         return None
 
 def _cupon_corrido(bond_key: str, settlement: datetime = None):
-    """Cupón corrido como % del VN."""
+    """
+    Cupón corrido como % del VN.
+    Para bonos con amortización (C+A), el flujo incluye capital.
+    El cupón corrido solo corresponde al componente de interés del próximo pago.
+    Para simplificar: interpolamos linealmente el flujo completo del período.
+    """
     if settlement is None:
         settlement = datetime.today()
     b = BONDS_DB[bond_key]
-    cfs_all = [(datetime.strptime(f, "%Y-%m-%d"), m)
-               for f, _, m in b["cash_flows"]]
-    # Encontrar el cupón anterior y el siguiente
-    pasados  = [(d, m) for d, m in cfs_all if d <= settlement]
-    futuros  = [(d, m) for d, m in cfs_all if d > settlement]
-    if not pasados or not futuros:
+    # Build list of (date, tipo, monto) 
+    cfs_all = [(datetime.strptime(f, "%Y-%m-%d"), t, m) for f, t, m in b["cash_flows"]]
+    pasados = [(d, t, m) for d, t, m in cfs_all if d <= settlement]
+    futuros = [(d, t, m) for d, t, m in cfs_all if d > settlement]
+    if not futuros:
         return 0.0
-    ultimo_cf  = max(pasados, key=lambda x: x[0])[0]
-    proximo_cf = min(futuros, key=lambda x: x[0])
-    dias_periodo = (proximo_cf[0] - ultimo_cf).days
-    dias_corridos = (settlement - ultimo_cf).days
-    if dias_periodo <= 0:
+    proximo = min(futuros, key=lambda x: x[0])
+    proximo_fecha, proximo_tipo, proximo_monto = proximo
+    # Fecha inicio del período: último flujo pasado o emisión
+    if pasados:
+        inicio_periodo = max(pasados, key=lambda x: x[0])[0]
+    else:
+        # Antes del primer flujo: usar fecha de emisión si existe, sino primer flujo menos 6 meses
+        emision_str = b.get("emision")
+        if emision_str:
+            inicio_periodo = datetime.strptime(emision_str, "%Y-%m-%d")
+        else:
+            inicio_periodo = proximo_fecha - timedelta(days=182)
+    dias_periodo  = (proximo_fecha - inicio_periodo).days
+    dias_corridos = (settlement - inicio_periodo).days
+    if dias_periodo <= 0 or dias_corridos <= 0:
         return 0.0
-    cupon_periodo = proximo_cf[1] if "A" not in dict(
-        [(datetime.strptime(f, "%Y-%m-%d"), t) for f, t, _ in b["cash_flows"]]
-    ).get(proximo_cf[0], "") else b["cupon_tna"] * 100 / b["frecuencia_cupones"]
+    # El cupón del período es el monto del próximo flujo menos la amortización
+    # Para "C+A": el cupón puro = cupon_tna * vn / frecuencia
+    # Para "C": el monto es solo cupón
+    freq = b.get("frecuencia_cupones", 2)
+    cupon_tna = b.get("cupon_tna", 0.0)
+    if cupon_tna > 0:
+        # Bono con cupón explícito (ONs)
+        cupon_periodo = cupon_tna * 100 / freq
+    else:
+        # Soberanos: el cash_flow de tipo "C" es solo interés; "C+A" incluye amortización
+        # Estimamos el cupón puro como el promedio de los flujos tipo "C" puros
+        solo_cupones = [m for _, t, m in cfs_all if t == "C"]
+        if solo_cupones:
+            cupon_periodo = sum(solo_cupones) / len(solo_cupones)
+        else:
+            # Solo "C+A": tomamos el flujo más pequeño como proxy del cupón puro
+            montos = [m for _, _, m in cfs_all]
+            cupon_periodo = min(montos)
     return cupon_periodo * dias_corridos / dias_periodo
 
 def _duration_macaulay(bond_key: str, precio_sucio: float, settlement: datetime = None):
@@ -1848,98 +1902,114 @@ with tab6:
     # RF TAB 1 — MERCADO HOY (cotizaciones intraday)
     # ══════════════════════════════════════════════════════════════════════════
     with rf_tab1:
-        st.markdown("#### Cotizaciones intraday — Segmento Garantizado PPT")
+        st.markdown("#### Cotizaciones en tiempo real — data912.com")
 
-        if not has_mae:
-            st.info("Ingresá la MAE API Key en el sidebar para ver datos en tiempo real.")
+        df_live = d912_live_bonds()
+
+        if df_live.empty:
+            st.warning("Sin datos. data912.com puede estar fuera de servicio.")
+            errs = st.session_state.get("d912_errors", [])
+            if errs:
+                st.code(errs[-1])
         else:
-            df_hoy = mae_cotizaciones_hoy()
+            def _clasificar(sym):
+                s = str(sym).upper()
+                if s.startswith("GD"):  return "Global USD"
+                if s.startswith("AL"):  return "Bonar USD"
+                if s.startswith("AE"):  return "AE USD"
+                if s.startswith("TX"):  return "CER ARS"
+                if s.startswith("X"):   return "Dollar-linked"
+                if any(s.startswith(p) for p in ["S2","S3","T2","T3","BL","BU","BG","PM"]):
+                    return "Lecap/Boncap"
+                return "Otros"
 
-            if df_hoy.empty:
-                st.warning("Sin datos intraday. Puede ser fuera de horario o error de conexión.")
+            df_live["clase"] = df_live["symbol"].apply(_clasificar)
+            activos = df_live[df_live["v"] > 0]
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total", len(df_live))
+            m2.metric("Con operaciones", len(activos))
+            m3.metric("Sob. USD", len(df_live[df_live["clase"].isin(["Global USD","Bonar USD","AE USD"])]))
+            m4.metric("Tasa/ARS", len(df_live[df_live["clase"].isin(["Lecap/Boncap","CER ARS"])]))
+
+            st.divider()
+
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                clases_disp = sorted(df_live["clase"].unique())
+                clases_sel = st.multiselect(
+                    "Clase", clases_disp,
+                    default=[c for c in ["Global USD","Bonar USD","AE USD"] if c in clases_disp],
+                    key="rf_clase_filter",
+                )
+            with fc2:
+                solo_op = st.checkbox("Solo con operaciones hoy", value=True, key="rf_op_filter")
+
+            df_show = df_live.copy()
+            if clases_sel:
+                df_show = df_show[df_show["clase"].isin(clases_sel)]
+            if solo_op:
+                df_show = df_show[df_show["v"] > 0]
+
+            if df_show.empty:
+                st.info("Sin instrumentos con los filtros seleccionados.")
             else:
-                # Filtrar: solo /CI y con precio > 0
-                df_ci = df_hoy[
-                    (df_hoy["plazo_sfx"] == "CI") &
-                    (df_hoy["precioUltimo"] > 0)
-                ].copy()
+                cols_map = {"symbol":"Ticker","clase":"Clase","px_bid":"Bid","px_ask":"Ask",
+                            "c":"Último","pct_change":"Var. %","v":"Volumen (VN)","q_op":"Operaciones"}
+                df_disp = df_show[[c for c in cols_map if c in df_show.columns]].rename(columns=cols_map)
+                df_disp = df_disp.sort_values("Var. %", ascending=False)
 
-                if df_ci.empty:
-                    st.warning("Sin cotizaciones CI activas.")
-                else:
-                    # Clasificar
-                    def _clasificar(ticker):
-                        t = ticker.upper()
-                        if t.startswith("GD"):   return "Global"
-                        if t.startswith("AL"):   return "Bonar"
-                        if t.startswith("AE"):   return "AE"
-                        if t.startswith("TX"):   return "CER"
-                        if t.startswith("X"):    return "Dollar-linked"
-                        if t.startswith("S") or t.startswith("T") or t.startswith("B"):
-                            return "Lecap/Boncap"
-                        return "Otro"
+                def _color_var(val):
+                    if pd.isna(val): return ""
+                    return "color: #00cc88" if val > 0 else ("color: #ff4b4b" if val < 0 else "")
 
-                    df_ci["clase"] = df_ci["ticker_base"].apply(_clasificar)
-                    df_ci["var_pct"] = pd.to_numeric(df_ci.get("variacion", 0), errors="coerce")
-                    df_ci["precio"] = pd.to_numeric(df_ci["precioUltimo"], errors="coerce")
-                    df_ci["precio_ayer"] = pd.to_numeric(df_ci["precioCierreAnterior"], errors="coerce")
+                st.dataframe(
+                    df_disp.style.applymap(_color_var, subset=["Var. %"])
+                        .format({"Bid":"{:.4f}","Ask":"{:.4f}","Último":"{:.4f}",
+                                 "Var. %":"{:.2f}%","Volumen (VN)":"{:,.0f}","Operaciones":"{:.0f}"}),
+                    use_container_width=True, height=430,
+                )
+                st.caption(f"Fuente: data912.com · {len(df_show)} instrumentos · Actualizado c/2 min")
 
-                    # Filtro por clase
-                    clases_disp = sorted(df_ci["clase"].unique())
-                    clases_sel = st.multiselect(
-                        "Filtrar por clase",
-                        clases_disp,
-                        default=["Global", "Bonar"],
-                        key="rf_clase_filter",
+                df_var = df_show[df_show["pct_change"] != 0].copy()
+                if len(df_var) >= 3:
+                    df_bar = df_var.reindex(df_var["pct_change"].abs().nlargest(20).index).sort_values("pct_change")
+                    fig_var = go.Figure(go.Bar(
+                        x=df_bar["pct_change"], y=df_bar["symbol"], orientation="h",
+                        marker_color=["#00cc88" if v >= 0 else "#ff4b4b" for v in df_bar["pct_change"]],
+                        text=df_bar["pct_change"].round(2).astype(str) + "%",
+                        textposition="outside",
+                    ))
+                    fig_var.update_layout(
+                        title="Top 20 variaciones del día", xaxis_title="Variación %",
+                        height=max(350, len(df_bar)*22), template="plotly_white", margin=dict(l=100),
                     )
-                    df_show = df_ci[df_ci["clase"].isin(clases_sel)] if clases_sel else df_ci
+                    st.plotly_chart(fig_var, use_container_width=True)
 
-                    # Tabla
-                    cols_show = ["ticker_base", "clase", "moneda", "precio", "precio_ayer", "var_pct",
-                                 "volumenAcumulado", "montoAcumulado"]
-                    cols_exist = [c for c in cols_show if c in df_show.columns]
-                    df_disp = df_show[cols_exist].rename(columns={
-                        "ticker_base": "Ticker",
-                        "clase": "Clase",
-                        "moneda": "Moneda",
-                        "precio": "Precio CI",
-                        "precio_ayer": "Cierre Ayer",
-                        "var_pct": "Var. %",
-                        "volumenAcumulado": "Vol. (VN)",
-                        "montoAcumulado": "Monto",
-                    }).sort_values("Var. %", ascending=False)
-
-                    def _color_var(val):
-                        if pd.isna(val): return ""
-                        return "color: #00cc88" if val > 0 else ("color: #ff4b4b" if val < 0 else "")
-
-                    st.dataframe(
-                        df_disp.style.applymap(_color_var, subset=["Var. %"])
-                               .format({"Precio CI": "{:.4f}", "Cierre Ayer": "{:.4f}", "Var. %": "{:.2f}%"}),
-                        use_container_width=True,
-                        height=400,
-                    )
-                    st.caption(f"Fuente: MAE API · {len(df_show)} instrumentos · Actualizado c/5 min")
-
-                    # Gráfico variaciones
-                    if len(df_show) > 1:
-                        df_bar = df_show.nlargest(20, "var_pct")
-                        fig_var = go.Figure(go.Bar(
-                            x=df_bar["ticker_base"],
-                            y=df_bar["var_pct"],
-                            marker_color=["#00cc88" if v >= 0 else "#ff4b4b"
-                                          for v in df_bar["var_pct"]],
-                            text=df_bar["var_pct"].round(2).astype(str) + "%",
-                            textposition="outside",
+                st.divider()
+                st.markdown("**Serie histórica**")
+                sym_sel = st.selectbox("Ticker", df_show["symbol"].tolist(), key="rf_sym_hist")
+                if sym_sel:
+                    df_hist = d912_historical(sym_sel)
+                    if df_hist.empty:
+                        st.warning(f"Sin histórico para {sym_sel}")
+                    else:
+                        periodo = st.select_slider("Período", ["3M","6M","1Y","2Y","Todo"],
+                                                    value="1Y", key="rf_hist_period")
+                        dias_map = {"3M":90,"6M":180,"1Y":252,"2Y":504,"Todo":99999}
+                        df_p = df_hist.tail(dias_map[periodo])
+                        fig_h = go.Figure()
+                        fig_h.add_trace(go.Scatter(
+                            x=df_p["date"], y=df_p["c"], mode="lines", name="Cierre",
+                            line=dict(color="#636EFA", width=2),
+                            fill="tozeroy", fillcolor="rgba(99,110,250,0.08)",
                         ))
-                        fig_var.update_layout(
-                            title="Top 20 variaciones diarias",
-                            yaxis_title="Variación %",
-                            xaxis_tickangle=-45,
-                            height=380,
-                            template="plotly_white",
+                        fig_h.update_layout(
+                            title=f"{sym_sel} — Precio histórico", yaxis_title="Precio",
+                            height=350, template="plotly_white", hovermode="x unified",
                         )
-                        st.plotly_chart(fig_var, use_container_width=True)
+                        st.plotly_chart(fig_h, use_container_width=True)
+                        st.caption(f"{len(df_p)} ruedas · {df_p['date'].iloc[0].date()} → {df_p['date'].iloc[-1].date()}")
 
     # ══════════════════════════════════════════════════════════════════════════
     # RF TAB 2 — ANÁLISIS DE BONOS (soberanos con math)
