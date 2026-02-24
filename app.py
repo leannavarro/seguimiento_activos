@@ -2000,7 +2000,7 @@ with tab6:
             precio_input = st.number_input(
                 "Precio limpio (% VN)",
                 min_value=0.1, max_value=200.0,
-                value=float(round(precio_mercado, 2)) if precio_mercado and precio_mercado > 0 else 63.0,
+                value=float(round(min(max(precio_mercado, 0.1), 199.0), 2)) if precio_mercado and precio_mercado > 0 else 63.0,
                 step=0.01, format="%.2f",
                 key="rf_precio_input",
                 help="Precio limpio = cotización de mercado (sin cupón corrido)"
@@ -2112,7 +2112,7 @@ with tab6:
                 if not row_c.empty:
                     raw_c = float(row_c.iloc[0].get("c", 0) or 0)
                     pm = raw_c * 100 if raw_c < 5 else raw_c
-            default_p = round(pm, 2) if pm and pm > 0 else 0.0
+            default_p = round(min(max(pm, 0.0), 199.0), 2) if pm and pm > 0 else 0.0
             with cols_curve[i % 6]:
                 precios_curve[tk] = st.number_input(
                     tk, min_value=0.0, max_value=200.0,
