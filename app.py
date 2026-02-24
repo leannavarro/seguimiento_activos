@@ -1981,18 +1981,23 @@ with tab6:
         b   = BONDS_DB[bond_sel]
         hoy = datetime.today().date()
 
-        # Precargar precio desde data912 live si disponible
+        # Precargar precio desde data912 live — buscar ticker USD (sufijo D primero)
         precio_mercado = None
         df_live_tab2 = d912_live_bonds()
         if not df_live_tab2.empty:
-            row = df_live_tab2[df_live_tab2["symbol"].str.upper() == bond_sel.upper()]
-            if not row.empty:
-                raw = float(row.iloc[0].get("c", 0) or 0)
-                if raw > 0:
-                    precio_mercado = raw  # data912 devuelve precio como ratio (0.6323 = 63.23%)
-                    # Normalizar: si viene como ratio (<5) convertir a %
-                    if precio_mercado < 5:
-                        precio_mercado *= 100
+            syms_to_try = [bond_sel + "D", bond_sel]  # GD29D primero, luego GD29
+            for sym in syms_to_try:
+                row = df_live_tab2[df_live_tab2["symbol"].str.upper() == sym.upper()]
+                if not row.empty:
+                    raw = float(row.iloc[0].get("c", 0) or 0)
+                    if raw <= 0:
+                        continue
+                    # Normalizar: ratio (<5) → *100, precio razonable (<200) → usar
+                    if raw < 5:
+                        raw *= 100
+                    if raw <= 200:
+                        precio_mercado = raw
+                        break  # precio válido encontrado
 
         # Input precio
         c_inp, c_metr = st.columns([1, 3])
@@ -2108,10 +2113,17 @@ with tab6:
             # Precargar desde data912
             pm = None
             if not df_live_tab2.empty:
-                row_c = df_live_tab2[df_live_tab2["symbol"].str.upper() == tk.upper()]
-                if not row_c.empty:
-                    raw_c = float(row_c.iloc[0].get("c", 0) or 0)
-                    pm = raw_c * 100 if raw_c < 5 else raw_c
+                for sym in [tk + "D", tk]:
+                    row_c = df_live_tab2[df_live_tab2["symbol"].str.upper() == sym.upper()]
+                    if not row_c.empty:
+                        raw_c = float(row_c.iloc[0].get("c", 0) or 0)
+                        if raw_c <= 0:
+                            continue
+                        if raw_c < 5:
+                            raw_c *= 100
+                        if raw_c <= 200:
+                            pm = raw_c
+                            break
             default_p = round(min(max(pm, 0.0), 199.0), 2) if pm and pm > 0 else 0.0
             with cols_curve[i % 6]:
                 precios_curve[tk] = st.number_input(
