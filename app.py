@@ -208,360 +208,313 @@ def mae_boletin_historico(ticker_base: str, dias: int = 60, plazo: str = "000"):
 
 from scipy.optimize import brentq
 
+# ─── BOND MATH — base 30/360, prospectos MECON Dto 391/2020 ──────────────────
+
+from dateutil.relativedelta import relativedelta
+
+def _days_30_360(d1, d2):
+    """Convención 30/360 US Bond Basis."""
+    y1, m1, day1 = d1.year, d1.month, min(d1.day, 30)
+    y2, m2, day2 = d2.year, d2.month, d2.day
+    if day2 == 31 and day1 >= 30:
+        day2 = 30
+    return 360*(y2-y1) + 30*(m2-m1) + (day2-day1)
+
+def _frac_30_360(d1, d2):
+    return _days_30_360(d1, d2) / 360.0
+
+def _build_sovereign_flows(amort_sched, rate_sched, coupon_start, end_date):
+    """
+    Genera cash flows completos para bonos soberanos canje 2020.
+    amort_sched: [(date, pct_vn_original), ...]
+    rate_sched:  [(date_from, date_to, tna), ...]
+    Retorna: [(date, cupon_pct, amort_pct), ...] sobre VN original=100
+    """
+    from datetime import date as _date
+    amort_map = {d: a for d, a in amort_sched}
+    # Generar todas las fechas de cupón
+    coupon_dates = []
+    d = coupon_start
+    while d <= end_date:
+        coupon_dates.append(d)
+        d += relativedelta(months=6)
+    vn = 100.0
+    flows = []
+    prev = coupon_start - relativedelta(months=6)
+    for cd in coupon_dates:
+        tna = next((r for df, dt, r in rate_sched if df <= prev < dt), rate_sched[-1][2])
+        frac = _frac_30_360(prev, cd)
+        cup  = vn * tna * frac
+        am   = amort_map.get(cd, 0.0)
+        flows.append((cd, round(cup, 8), round(am, 8)))
+        vn  -= am
+        prev = cd
+    return flows
+
+# ─ Helpers de amortización ───────────────────────────────────────────────────
+def _amort_equal(first_date, n):
+    """n cuotas iguales de 100/n% semestrales."""
+    return [(first_date + relativedelta(months=6*i), round(100/n, 8)) for i in range(n)]
+
+def _amort_step(first_date, first_pct, rest_pct, end_date):
+    """Primera cuota = first_pct, restantes = rest_pct cada 6 meses hasta end_date."""
+    sched = [(first_date, first_pct)]
+    d = first_date + relativedelta(months=6)
+    while d <= end_date:
+        sched.append((d, rest_pct))
+        d += relativedelta(months=6)
+    return sched
+
+# ─ Fecha inicio cupones (común a todos los bonos del canje) ──────────────────
+_CS = date(2021, 7, 9)
+
+# ─ Tramos de tasas por familia ───────────────────────────────────────────────
+_RATES_GD29 = [(date(2020,9,4), date(2030,1,1), 0.01)]
+_RATES_GD30 = [
+    (date(2020,9,4),  date(2021,7,9),  0.00125),
+    (date(2021,7,9),  date(2023,7,9),  0.0050),
+    (date(2023,7,9),  date(2027,7,9),  0.0075),
+    (date(2027,7,9),  date(2031,1,1),  0.0175),
+]
+_RATES_GD35 = [
+    (date(2020,9,4),  date(2021,7,9),  0.00125),
+    (date(2021,7,9),  date(2022,7,9),  0.01125),
+    (date(2022,7,9),  date(2023,7,9),  0.0150),
+    (date(2023,7,9),  date(2024,7,9),  0.03625),
+    (date(2024,7,9),  date(2027,7,9),  0.04125),
+    (date(2027,7,9),  date(2028,7,9),  0.0475),
+    (date(2028,7,9),  date(2036,1,1),  0.0500),
+]
+_RATES_GD38 = [
+    (date(2020,9,4),  date(2021,7,9),  0.00125),
+    (date(2021,7,9),  date(2022,7,9),  0.0200),
+    (date(2022,7,9),  date(2023,7,9),  0.03875),
+    (date(2023,7,9),  date(2024,7,9),  0.0425),
+    (date(2024,7,9),  date(2038,7,1),  0.0500),
+]
+_RATES_GD41 = [
+    (date(2020,9,4),  date(2021,7,9),  0.00125),
+    (date(2021,7,9),  date(2022,7,9),  0.0250),
+    (date(2022,7,9),  date(2029,7,9),  0.0350),
+    (date(2029,7,9),  date(2042,1,1),  0.04875),
+]
+_RATES_GD46 = [
+    (date(2020,9,4),  date(2021,7,9),  0.00125),
+    (date(2021,7,9),  date(2022,7,9),  0.01125),
+    (date(2022,7,9),  date(2023,7,9),  0.0150),
+    (date(2023,7,9),  date(2024,7,9),  0.03625),
+    (date(2024,7,9),  date(2027,7,9),  0.04125),
+    (date(2027,7,9),  date(2028,7,9),  0.04375),
+    (date(2028,7,9),  date(2047,1,1),  0.0500),
+]
+
+# ─── BONDS_DB ────────────────────────────────────────────────────────────────
 BONDS_DB = {
-    # ── Soberanos USD ──────────────────────────────────────────────────────────
+    # ── GD29 / AL29 — 1% 2029 ────────────────────────────────────────────────
+    "GD29": {
+        "nombre": "Global USD 1% 2029 (L.NY)", "ley": "NY", "tipo": "Soberano",
+        "moneda": "USD", "vencimiento": date(2029,7,9),
+        "cash_flows": _build_sovereign_flows(_amort_equal(date(2025,1,9), 10), _RATES_GD29, _CS, date(2029,7,9)),
+    },
     "AL29": {
-        "nombre": "Bonar 2029",
-        "ticker_mae": "AL29",        # segmento 2
-        "ticker_mae_ppt": "AL29D",   # segmento 4 (con D = dólares)
-        "tipo": "Soberano",
-        "moneda": "USD",
-        "vencimiento": "2029-07-09",
-        "cupon_tna": 0.0,            # amortiza capital + intereses según schedule
-        "frecuencia_cupones": 2,     # semestral
-        "vn": 100,
-        "amortizacion": "schedule",
-        "cash_flows": [
-            # (fecha, tipo, monto_pct_vn)  — fuente: prospectus/INDEC
-            ("2024-07-09", "C+A", 4.125),
-            ("2025-01-09", "C+A", 4.125),
-            ("2025-07-09", "C+A", 12.625),
-            ("2026-01-09", "C+A", 4.125),
-            ("2026-07-09", "C+A", 12.625),
-            ("2027-01-09", "C+A", 4.125),
-            ("2027-07-09", "C+A", 12.625),
-            ("2028-01-09", "C+A", 4.125),
-            ("2028-07-09", "C+A", 12.625),
-            ("2029-01-09", "C+A", 4.125),
-            ("2029-07-09", "C+A", 30.250),
-        ],
+        "nombre": "Bonar USD 1% 2029 (L.AR)", "ley": "AR", "tipo": "Soberano",
+        "moneda": "USD", "vencimiento": date(2029,7,9),
+        "cash_flows": _build_sovereign_flows(_amort_equal(date(2025,1,9), 10), _RATES_GD29, _CS, date(2029,7,9)),
+    },
+    # ── GD30 / AL30 — Step Up 2030 ───────────────────────────────────────────
+    "GD30": {
+        "nombre": "Global USD Step Up 2030 (L.NY)", "ley": "NY", "tipo": "Soberano",
+        "moneda": "USD", "vencimiento": date(2030,7,9),
+        "cash_flows": _build_sovereign_flows(_amort_step(date(2024,7,9), 4.0, 8.0, date(2030,7,9)), _RATES_GD30, _CS, date(2030,7,9)),
     },
     "AL30": {
-        "nombre": "Bonar 2030",
-        "ticker_mae": "AL30",
-        "ticker_mae_ppt": "AL30D",
-        "tipo": "Soberano",
-        "moneda": "USD",
-        "vencimiento": "2030-07-09",
-        "cupon_tna": 0.0,
-        "frecuencia_cupones": 2,
-        "vn": 100,
-        "amortizacion": "schedule",
-        "cash_flows": [
-            ("2024-07-09", "C+A", 4.125),
-            ("2025-01-09", "C+A", 4.125),
-            ("2025-07-09", "C+A", 12.625),
-            ("2026-01-09", "C+A", 4.125),
-            ("2026-07-09", "C+A", 12.625),
-            ("2027-01-09", "C+A", 4.125),
-            ("2027-07-09", "C+A", 12.625),
-            ("2028-01-09", "C+A", 4.125),
-            ("2028-07-09", "C+A", 12.625),
-            ("2029-01-09", "C+A", 4.125),
-            ("2029-07-09", "C+A", 12.625),
-            ("2030-01-09", "C+A", 4.125),
-            ("2030-07-09", "C+A", 30.250),
-        ],
+        "nombre": "Bonar USD Step Up 2030 (L.AR)", "ley": "AR", "tipo": "Soberano",
+        "moneda": "USD", "vencimiento": date(2030,7,9),
+        "cash_flows": _build_sovereign_flows(_amort_step(date(2024,7,9), 4.0, 8.0, date(2030,7,9)), _RATES_GD30, _CS, date(2030,7,9)),
     },
-    "GD29": {
-        "nombre": "Global 2029",
-        "ticker_mae": "GD29",
-        "ticker_mae_ppt": "GD29D",
-        "tipo": "Soberano",
-        "moneda": "USD",
-        "vencimiento": "2029-07-09",
-        "cupon_tna": 0.0,
-        "frecuencia_cupones": 2,
-        "vn": 100,
-        "amortizacion": "schedule",
-        "cash_flows": [
-            ("2024-07-09", "C+A", 4.125),
-            ("2025-01-09", "C+A", 4.125),
-            ("2025-07-09", "C+A", 12.625),
-            ("2026-01-09", "C+A", 4.125),
-            ("2026-07-09", "C+A", 12.625),
-            ("2027-01-09", "C+A", 4.125),
-            ("2027-07-09", "C+A", 12.625),
-            ("2028-01-09", "C+A", 4.125),
-            ("2028-07-09", "C+A", 12.625),
-            ("2029-01-09", "C+A", 4.125),
-            ("2029-07-09", "C+A", 30.250),
-        ],
-    },
-    "GD30": {
-        "nombre": "Global 2030",
-        "ticker_mae": "GD30",
-        "ticker_mae_ppt": "GD30D",
-        "tipo": "Soberano",
-        "moneda": "USD",
-        "vencimiento": "2030-07-09",
-        "cupon_tna": 0.0,
-        "frecuencia_cupones": 2,
-        "vn": 100,
-        "amortizacion": "schedule",
-        "cash_flows": [
-            ("2024-07-09", "C+A", 4.125),
-            ("2025-01-09", "C+A", 4.125),
-            ("2025-07-09", "C+A", 12.625),
-            ("2026-01-09", "C+A", 4.125),
-            ("2026-07-09", "C+A", 12.625),
-            ("2027-01-09", "C+A", 4.125),
-            ("2027-07-09", "C+A", 12.625),
-            ("2028-01-09", "C+A", 4.125),
-            ("2028-07-09", "C+A", 12.625),
-            ("2029-01-09", "C+A", 4.125),
-            ("2029-07-09", "C+A", 12.625),
-            ("2030-01-09", "C+A", 4.125),
-            ("2030-07-09", "C+A", 30.250),
-        ],
-    },
+    # ── GD35 / AL35 — Step Up 2035 ───────────────────────────────────────────
     "GD35": {
-        "nombre": "Global 2035",
-        "ticker_mae": "GD35",
-        "ticker_mae_ppt": "GD35D",
-        "tipo": "Soberano",
-        "moneda": "USD",
-        "vencimiento": "2035-07-09",
-        "cupon_tna": 0.0,
-        "frecuencia_cupones": 2,
-        "vn": 100,
-        "amortizacion": "schedule",
-        "cash_flows": [
-            ("2025-01-09", "C",   3.625),
-            ("2025-07-09", "C+A", 10.125),
-            ("2026-01-09", "C",   3.625),
-            ("2026-07-09", "C+A", 10.125),
-            ("2027-01-09", "C",   3.625),
-            ("2027-07-09", "C+A", 10.125),
-            ("2028-01-09", "C",   3.625),
-            ("2028-07-09", "C+A", 10.125),
-            ("2029-01-09", "C",   3.625),
-            ("2029-07-09", "C+A", 10.125),
-            ("2030-01-09", "C",   3.625),
-            ("2030-07-09", "C+A", 10.125),
-            ("2031-01-09", "C",   3.625),
-            ("2031-07-09", "C+A", 10.125),
-            ("2032-01-09", "C",   3.625),
-            ("2032-07-09", "C+A", 10.125),
-            ("2033-01-09", "C",   3.625),
-            ("2033-07-09", "C+A", 10.125),
-            ("2034-01-09", "C",   3.625),
-            ("2034-07-09", "C+A", 10.125),
-            ("2035-01-09", "C",   3.625),
-            ("2035-07-09", "C+A", 28.125),
-        ],
+        "nombre": "Global USD Step Up 2035 (L.NY)", "ley": "NY", "tipo": "Soberano",
+        "moneda": "USD", "vencimiento": date(2035,7,9),
+        "cash_flows": _build_sovereign_flows(_amort_step(date(2029,7,9), 4.0, 8.0, date(2035,7,9)), _RATES_GD35, _CS, date(2035,7,9)),
     },
+    "AL35": {
+        "nombre": "Bonar USD Step Up 2035 (L.AR)", "ley": "AR", "tipo": "Soberano",
+        "moneda": "USD", "vencimiento": date(2035,7,9),
+        "cash_flows": _build_sovereign_flows(_amort_equal(date(2031,1,9), 10), _RATES_GD35, _CS, date(2035,7,9)),
+    },
+    # ── GD38 / AL38 — Step Up 2038 ───────────────────────────────────────────
     "GD38": {
-        "nombre": "Global 2038",
-        "ticker_mae": "GD38",
-        "ticker_mae_ppt": "GD38D",
-        "tipo": "Soberano",
-        "moneda": "USD",
-        "vencimiento": "2038-01-09",
-        "cupon_tna": 0.0,
-        "frecuencia_cupones": 2,
-        "vn": 100,
-        "amortizacion": "schedule",
-        "cash_flows": [
-            ("2025-01-09", "C",   4.625),
-            ("2025-07-09", "C",   4.625),
-            ("2026-01-09", "C",   4.625),
-            ("2026-07-09", "C+A", 12.458),
-            ("2027-01-09", "C+A", 12.458),
-            ("2027-07-09", "C+A", 12.458),
-            ("2028-01-09", "C+A", 12.458),
-            ("2028-07-09", "C+A", 12.458),
-            ("2029-01-09", "C+A", 12.458),
-            ("2029-07-09", "C+A", 12.458),
-            ("2030-01-09", "C+A", 12.458),
-            ("2030-07-09", "C+A", 12.458),
-            ("2031-01-09", "C+A", 12.458),
-            ("2031-07-09", "C+A", 12.458),
-            ("2032-01-09", "C+A", 12.458),
-            ("2032-07-09", "C+A", 12.458),
-            ("2033-01-09", "C+A", 12.458),
-            ("2033-07-09", "C+A", 12.458),
-            ("2034-01-09", "C+A", 12.458),
-            ("2034-07-09", "C+A", 12.458),
-            ("2035-01-09", "C+A", 12.458),
-            ("2035-07-09", "C+A", 12.458),
-            ("2036-01-09", "C+A", 12.458),
-            ("2036-07-09", "C+A", 12.458),
-            ("2037-01-09", "C+A", 12.458),
-            ("2037-07-09", "C+A", 12.458),
-            ("2038-01-09", "C+A", 14.458),
-        ],
+        "nombre": "Global USD Step Up 2038 (L.NY)", "ley": "NY", "tipo": "Soberano",
+        "moneda": "USD", "vencimiento": date(2038,1,9),
+        "cash_flows": _build_sovereign_flows(_amort_equal(date(2027,7,9), 22), _RATES_GD38, _CS, date(2038,1,9)),
     },
+    "AL38": {
+        "nombre": "Bonar USD Step Up 2038 (L.AR)", "ley": "AR", "tipo": "Soberano",
+        "moneda": "USD", "vencimiento": date(2038,1,9),
+        "cash_flows": _build_sovereign_flows(_amort_equal(date(2027,7,9), 22), _RATES_GD38, _CS, date(2038,1,9)),
+    },
+    # ── GD41 / AL41 — Step Up 2041 ───────────────────────────────────────────
     "GD41": {
-        "nombre": "Global 2041",
-        "ticker_mae": "GD41",
-        "ticker_mae_ppt": "GD41D",
-        "tipo": "Soberano",
-        "moneda": "USD",
-        "vencimiento": "2041-07-09",
-        "cupon_tna": 0.0,
-        "frecuencia_cupones": 2,
-        "vn": 100,
-        "amortizacion": "schedule",
-        "cash_flows": [
-            ("2025-01-09", "C",   4.625),
-            ("2025-07-09", "C",   4.625),
-            ("2026-01-09", "C",   4.625),
-            ("2026-07-09", "C",   4.625),
-            ("2027-01-09", "C+A", 13.625),
-            ("2027-07-09", "C+A", 13.625),
-            ("2028-01-09", "C+A", 13.625),
-            ("2028-07-09", "C+A", 13.625),
-            ("2029-01-09", "C+A", 13.625),
-            ("2029-07-09", "C+A", 13.625),
-            ("2030-01-09", "C+A", 13.625),
-            ("2030-07-09", "C+A", 13.625),
-            ("2031-01-09", "C+A", 13.625),
-            ("2031-07-09", "C+A", 13.625),
-            ("2032-01-09", "C+A", 13.625),
-            ("2032-07-09", "C+A", 13.625),
-            ("2033-01-09", "C+A", 13.625),
-            ("2033-07-09", "C+A", 13.625),
-            ("2034-01-09", "C+A", 13.625),
-            ("2034-07-09", "C+A", 13.625),
-            ("2035-01-09", "C+A", 13.625),
-            ("2035-07-09", "C+A", 13.625),
-            ("2036-01-09", "C+A", 13.625),
-            ("2036-07-09", "C+A", 13.625),
-            ("2037-01-09", "C+A", 13.625),
-            ("2037-07-09", "C+A", 13.625),
-            ("2038-01-09", "C+A", 13.625),
-            ("2038-07-09", "C+A", 13.625),
-            ("2039-01-09", "C+A", 13.625),
-            ("2039-07-09", "C+A", 13.625),
-            ("2040-01-09", "C+A", 13.625),
-            ("2040-07-09", "C+A", 13.625),
-            ("2041-01-09", "C+A", 13.625),
-            ("2041-07-09", "C+A", 18.625),
-        ],
+        "nombre": "Global USD Step Up 2041 (L.NY)", "ley": "NY", "tipo": "Soberano",
+        "moneda": "USD", "vencimiento": date(2041,7,9),
+        "cash_flows": _build_sovereign_flows(_amort_equal(date(2028,1,9), 28), _RATES_GD41, _CS, date(2041,7,9)),
     },
-    # ── ON corporativa ejemplo: Tecpetrol Clase 11 ─────────────────────────────
-    "TPCO": {
-        "nombre": "Tecpetrol ON Cl.11",
-        "ticker_mae": "TPCO",        # ticker real MAE — confirmar
-        "ticker_mae_ppt": None,
-        "tipo": "ON Corporativa",
-        "emisor": "Tecpetrol",
-        "sector": "Oil & Gas",
-        "moneda": "USD",
-        "vencimiento": "2027-10-16",
-        "emision":     "2025-10-16",
-        "cupon_tna": 0.065,          # 6.50% TNA Actual/365 bullet
-        "frecuencia_cupones": 2,
-        "vn": 100,
-        "amortizacion": "bullet",
-        "call": {"desde": "2026-10-16", "precio": 100},
-        "cash_flows": [
-            ("2026-04-16", "C", 3.25),
-            ("2026-10-16", "C", 3.25),
-            ("2027-04-16", "C", 3.25),
-            ("2027-10-16", "C+A", 103.25),
-        ],
+    "AL41": {
+        "nombre": "Bonar USD Step Up 2041 (L.AR)", "ley": "AR", "tipo": "Soberano",
+        "moneda": "USD", "vencimiento": date(2041,7,9),
+        "cash_flows": _build_sovereign_flows(_amort_equal(date(2028,1,9), 28), _RATES_GD41, _CS, date(2041,7,9)),
+    },
+    # ── GD46 / AL46 — Step Up 2046 ───────────────────────────────────────────
+    "GD46": {
+        "nombre": "Global USD Step Up 2046 (L.NY)", "ley": "NY", "tipo": "Soberano",
+        "moneda": "USD", "vencimiento": date(2046,7,9),
+        "cash_flows": _build_sovereign_flows(_amort_equal(date(2025,1,9), 44), _RATES_GD46, _CS, date(2046,7,9)),
+    },
+    "AL46": {
+        "nombre": "Bonar USD Step Up 2046 (L.AR)", "ley": "AR", "tipo": "Soberano",
+        "moneda": "USD", "vencimiento": date(2046,7,9),
+        "cash_flows": _build_sovereign_flows(_amort_equal(date(2025,1,9), 44), _RATES_GD46, _CS, date(2046,7,9)),
     },
 }
 
-# ─── BOND MATH ────────────────────────────────────────────────────────────────
+# ─── BOND MATH FUNCTIONS ──────────────────────────────────────────────────────
 
-def _bond_future_cfs(bond_key: str, settlement: datetime = None):
-    """Retorna lista de (dias_hasta_cf, flujo_pct_vn) para flujos futuros."""
+def _bond_future_cfs(bond_key: str, settlement=None):
+    """
+    Retorna [(date, total_flujo_pct_vn)] para flujos futuros al settlement.
+    total = cupón + amortización.
+    """
     if settlement is None:
-        settlement = datetime.today()
+        settlement = datetime.today().date()
+    elif hasattr(settlement, 'date'):
+        settlement = settlement.date()
     b = BONDS_DB[bond_key]
-    cfs = []
-    for fecha_str, tipo, monto in b["cash_flows"]:
-        cf_date = datetime.strptime(fecha_str, "%Y-%m-%d")
-        if cf_date > settlement:
-            dias = (cf_date - settlement).days
-            cfs.append((dias, monto))
-    return cfs
+    return [(cd, round(cup+am, 8))
+            for cd, cup, am in b["cash_flows"] if cd > settlement]
 
-def _ytm(bond_key: str, precio_sucio: float, settlement: datetime = None):
-    """YTM anualizada (Act/365) por Newton-Brentq."""
+def _current_vn(bond_key: str, settlement=None):
+    """VN residual como % del VN original en la fecha de settlement."""
+    if settlement is None:
+        settlement = datetime.today().date()
+    elif hasattr(settlement, 'date'):
+        settlement = settlement.date()
+    b = BONDS_DB[bond_key]
+    paid = sum(am for cd, cup, am in b["cash_flows"] if cd <= settlement)
+    return 100.0 - paid
+
+def _cupon_corrido(bond_key: str, settlement=None):
+    """
+    Cupón corrido en % del VN original. Convención 30/360.
+    """
+    if settlement is None:
+        settlement = datetime.today().date()
+    elif hasattr(settlement, 'date'):
+        settlement = settlement.date()
+    b = BONDS_DB[bond_key]
+    flows = b["cash_flows"]
+    pasados = [(cd, cup, am) for cd, cup, am in flows if cd <= settlement]
+    futuros = [(cd, cup, am) for cd, cup, am in flows if cd > settlement]
+    if not futuros:
+        return 0.0
+    prev_cd = pasados[-1][0] if pasados else flows[0][0] - relativedelta(months=6)
+    next_cd, cup_prox, am_prox = futuros[0]
+    # VN al inicio del período actual
+    vn_inicio = _current_vn(bond_key, prev_cd)
+    # Tasa vigente — recalculamos interpolando con la duración del período
+    frac_total = _frac_30_360(prev_cd, next_cd)
+    if frac_total <= 0:
+        return 0.0
+    tna_vigente = cup_prox / (vn_inicio * frac_total) if vn_inicio > 0 else 0.0
+    frac_corrida = _frac_30_360(prev_cd, settlement)
+    return vn_inicio * tna_vigente * frac_corrida
+
+def _valor_tecnico(bond_key: str, settlement=None):
+    """Valor técnico = VN_residual * (1 + CC/VN_residual) = VN_residual + CC"""
+    cc = _cupon_corrido(bond_key, settlement)
+    vn = _current_vn(bond_key, settlement)
+    return vn + cc
+
+def _ytm(bond_key: str, precio_sucio: float, settlement=None):
+    """YTM anualizada con base 30/360. Precio sucio en % VN original."""
+    if settlement is None:
+        settlement = datetime.today().date()
+    elif hasattr(settlement, 'date'):
+        settlement = settlement.date()
     cfs = _bond_future_cfs(bond_key, settlement)
     if not cfs or precio_sucio <= 0:
         return None
     def f(y):
-        return sum(cf / (1 + y) ** (d / 365) for d, cf in cfs) - precio_sucio
+        return sum(tot / (1+y)**_frac_30_360(settlement, cd) for cd, tot in cfs) - precio_sucio
     try:
-        return brentq(f, -0.5, 10.0, maxiter=200)
+        return brentq(f, -0.5, 10.0, maxiter=300)
     except Exception:
         return None
 
-def _cupon_corrido(bond_key: str, settlement: datetime = None):
-    """
-    Cupón corrido como % del VN.
-    Para bonos con amortización (C+A), el flujo incluye capital.
-    El cupón corrido solo corresponde al componente de interés del próximo pago.
-    Para simplificar: interpolamos linealmente el flujo completo del período.
-    """
+def _duration_macaulay(bond_key: str, precio_sucio: float, settlement=None):
+    """Duration Macaulay en años (30/360)."""
     if settlement is None:
-        settlement = datetime.today()
-    b = BONDS_DB[bond_key]
-    # Build list of (date, tipo, monto) 
-    cfs_all = [(datetime.strptime(f, "%Y-%m-%d"), t, m) for f, t, m in b["cash_flows"]]
-    pasados = [(d, t, m) for d, t, m in cfs_all if d <= settlement]
-    futuros = [(d, t, m) for d, t, m in cfs_all if d > settlement]
-    if not futuros:
-        return 0.0
-    proximo = min(futuros, key=lambda x: x[0])
-    proximo_fecha, proximo_tipo, proximo_monto = proximo
-    # Fecha inicio del período: último flujo pasado o emisión
-    if pasados:
-        inicio_periodo = max(pasados, key=lambda x: x[0])[0]
-    else:
-        # Antes del primer flujo: usar fecha de emisión si existe, sino primer flujo menos 6 meses
-        emision_str = b.get("emision")
-        if emision_str:
-            inicio_periodo = datetime.strptime(emision_str, "%Y-%m-%d")
-        else:
-            inicio_periodo = proximo_fecha - timedelta(days=182)
-    dias_periodo  = (proximo_fecha - inicio_periodo).days
-    dias_corridos = (settlement - inicio_periodo).days
-    if dias_periodo <= 0 or dias_corridos <= 0:
-        return 0.0
-    # El cupón del período es el monto del próximo flujo menos la amortización
-    # Para "C+A": el cupón puro = cupon_tna * vn / frecuencia
-    # Para "C": el monto es solo cupón
-    freq = b.get("frecuencia_cupones", 2)
-    cupon_tna = b.get("cupon_tna", 0.0)
-    if cupon_tna > 0:
-        # Bono con cupón explícito (ONs)
-        cupon_periodo = cupon_tna * 100 / freq
-    else:
-        # Soberanos: el cash_flow de tipo "C" es solo interés; "C+A" incluye amortización
-        # Estimamos el cupón puro como el promedio de los flujos tipo "C" puros
-        solo_cupones = [m for _, t, m in cfs_all if t == "C"]
-        if solo_cupones:
-            cupon_periodo = sum(solo_cupones) / len(solo_cupones)
-        else:
-            # Solo "C+A": tomamos el flujo más pequeño como proxy del cupón puro
-            montos = [m for _, _, m in cfs_all]
-            cupon_periodo = min(montos)
-    return cupon_periodo * dias_corridos / dias_periodo
-
-def _duration_macaulay(bond_key: str, precio_sucio: float, settlement: datetime = None):
-    """Duration Macaulay en años."""
+        settlement = datetime.today().date()
+    elif hasattr(settlement, 'date'):
+        settlement = settlement.date()
     cfs = _bond_future_cfs(bond_key, settlement)
     if not cfs or precio_sucio <= 0:
         return None
     ytm = _ytm(bond_key, precio_sucio, settlement)
     if ytm is None:
         return None
-    pv_total = sum(cf / (1 + ytm) ** (d / 365) for d, cf in cfs)
-    if pv_total <= 0:
+    pv_tot = sum(tot/(1+ytm)**_frac_30_360(settlement, cd) for cd, tot in cfs)
+    if pv_tot <= 0:
         return None
-    dur = sum((d / 365) * (cf / (1 + ytm) ** (d / 365)) for d, cf in cfs) / pv_total
-    return dur
+    return sum(_frac_30_360(settlement, cd) * tot/(1+ytm)**_frac_30_360(settlement, cd) for cd, tot in cfs) / pv_tot
 
-def _precio_sucio_from_ytm(bond_key: str, ytm_target: float, settlement: datetime = None):
-    """Precio sucio dado un YTM objetivo."""
+def _convexity(bond_key: str, precio_sucio: float, settlement=None):
+    """Convexidad (30/360)."""
+    if settlement is None:
+        settlement = datetime.today().date()
+    elif hasattr(settlement, 'date'):
+        settlement = settlement.date()
     cfs = _bond_future_cfs(bond_key, settlement)
-    return sum(cf / (1 + ytm_target) ** (d / 365) for d, cf in cfs)
+    if not cfs or precio_sucio <= 0:
+        return None
+    ytm = _ytm(bond_key, precio_sucio, settlement)
+    if ytm is None:
+        return None
+    pv_tot = sum(tot/(1+ytm)**_frac_30_360(settlement, cd) for cd, tot in cfs)
+    if pv_tot <= 0:
+        return None
+    return sum(_frac_30_360(settlement,cd)**2 * tot/(1+ytm)**(_frac_30_360(settlement,cd)+2)
+               for cd, tot in cfs) / pv_tot
+
+def _current_yield(bond_key: str, precio_sucio: float, settlement=None):
+    """Current yield = flujos próximos 365 días / precio sucio."""
+    if settlement is None:
+        settlement = datetime.today().date()
+    elif hasattr(settlement, 'date'):
+        settlement = settlement.date()
+    cfs = _bond_future_cfs(bond_key, settlement)
+    cf_12m = sum(tot for cd, tot in cfs if _days_30_360(settlement, cd) <= 360)
+    return cf_12m / precio_sucio if precio_sucio > 0 else None
+
+def _paridad(bond_key: str, precio_sucio: float, settlement=None):
+    """Paridad = precio_sucio / valor_técnico."""
+    vt = _valor_tecnico(bond_key, settlement)
+    return precio_sucio / vt if vt > 0 else None
+
+def _tna_from_ytm(ytm: float):
+    """TNA semestral compuesta desde YTM anual: TNA = 2*((1+YTM)^0.5 - 1)."""
+    return 2 * ((1 + ytm)**0.5 - 1) if ytm is not None else None
+
+def _precio_sucio_from_ytm(bond_key: str, ytm_target: float, settlement=None):
+    """Precio sucio dado un YTM objetivo."""
+    if settlement is None:
+        settlement = datetime.today().date()
+    elif hasattr(settlement, 'date'):
+        settlement = settlement.date()
+    cfs = _bond_future_cfs(bond_key, settlement)
+    return sum(tot/(1+ytm_target)**_frac_30_360(settlement, cd) for cd, tot in cfs)
+
+
 
 # ─── FMP HELPERS (price target consensus only — other endpoints are premium) ──
 
@@ -2025,162 +1978,228 @@ with tab6:
             key="rf_bond_sel",
         )
 
-        b = BONDS_DB[bond_sel]
-        hoy = datetime.today()
+        b   = BONDS_DB[bond_sel]
+        hoy = datetime.today().date()
 
-        # Obtener precio de mercado desde boletín si hay key
+        # Precargar precio desde data912 live si disponible
         precio_mercado = None
-        if has_mae:
-            fecha_boletin = (hoy - timedelta(days=1)).strftime("%Y-%m-%d")
-            # Ajustar si es lunes
-            dow = hoy.weekday()
-            if dow == 0:
-                fecha_boletin = (hoy - timedelta(days=3)).strftime("%Y-%m-%d")
-            boletin = mae_boletin(fecha_boletin)
-            # Buscar en segmento 2 (soberanos MAE) o 4 (PPT)
-            for seg_id in [MAE_SEG_SOBERANOS_MAE, MAE_SEG_SOBERANOS_PPT]:
-                if seg_id in boletin:
-                    df_seg = boletin[seg_id]
-                    # Buscar ticker
-                    mask_base = df_seg["ticker_base"].str.upper() == bond_sel.upper()
-                    mask_ppt  = df_seg["ticker_base"].str.upper() == b.get("ticker_mae_ppt", "").upper()
-                    fila = df_seg[(mask_base | mask_ppt) & (df_seg["plazo"].astype(str) == "000")]
-                    if not fila.empty:
-                        raw_p = float(fila.iloc[0].get("precioCierreHoy", 0) or 0)
-                        if raw_p > 0:
-                            # En segmento 4 los soberanos D vienen como ratio (ej 0.829)
-                            # En segmento 2 como precio % VN (ej 67.5)
-                            if seg_id == MAE_SEG_SOBERANOS_PPT and raw_p < 5:
-                                precio_mercado = raw_p * 100  # convertir a % VN
-                            elif seg_id == MAE_SEG_SOBERANOS_MAE:
-                                precio_mercado = raw_p
-                            else:
-                                precio_mercado = raw_p
-                        break
+        df_live_tab2 = d912_live_bonds()
+        if not df_live_tab2.empty:
+            row = df_live_tab2[df_live_tab2["symbol"].str.upper() == bond_sel.upper()]
+            if not row.empty:
+                raw = float(row.iloc[0].get("c", 0) or 0)
+                if raw > 0:
+                    precio_mercado = raw  # data912 devuelve precio como ratio (0.6323 = 63.23%)
+                    # Normalizar: si viene como ratio (<5) convertir a %
+                    if precio_mercado < 5:
+                        precio_mercado *= 100
 
         # Input precio
-        c1, c2 = st.columns([1, 3])
-        with c1:
+        c_inp, c_metr = st.columns([1, 3])
+        with c_inp:
             precio_input = st.number_input(
                 "Precio limpio (% VN)",
-                min_value=0.1,
-                max_value=200.0,
-                value=float(round(precio_mercado, 2)) if precio_mercado and precio_mercado > 0 else 65.0,
-                step=0.01,
-                format="%.2f",
+                min_value=0.1, max_value=200.0,
+                value=float(round(precio_mercado, 2)) if precio_mercado and precio_mercado > 0 else 63.0,
+                step=0.01, format="%.2f",
                 key="rf_precio_input",
-                help="Precio sucio = precio limpio + cupón corrido"
+                help="Precio limpio = cotización de mercado (sin cupón corrido)"
             )
-            if precio_mercado and precio_mercado > 0:
-                st.caption(f"📡 MAE: {precio_mercado:.2f}")
+            if precio_mercado:
+                st.caption(f"📡 data912: {precio_mercado:.2f}")
 
-        cupon_corrido = _cupon_corrido(bond_sel, hoy)
-        precio_sucio  = precio_input + cupon_corrido
-        ytm           = _ytm(bond_sel, precio_sucio, hoy)
-        dur_mac       = _duration_macaulay(bond_sel, precio_sucio, hoy)
-        dur_mod       = (dur_mac / (1 + ytm)) if (dur_mac and ytm is not None) else None
-        venc          = datetime.strptime(b["vencimiento"], "%Y-%m-%d")
-        dias_venc     = (venc - hoy).days
+        # Calcular métricas
+        cc        = _cupon_corrido(bond_sel, hoy)
+        ps        = precio_input + cc
+        ytm       = _ytm(bond_sel, ps, hoy)
+        vt        = _valor_tecnico(bond_sel, hoy)
+        paridad   = _paridad(bond_sel, ps, hoy)
+        dur_mac   = _duration_macaulay(bond_sel, ps, hoy)
+        dur_mod   = (dur_mac / (1 + ytm)) if (dur_mac and ytm is not None) else None
+        convex    = _convexity(bond_sel, ps, hoy)
+        cy        = _current_yield(bond_sel, ps, hoy)
+        tna       = _tna_from_ytm(ytm)
+        vn_res    = _current_vn(bond_sel, hoy)
+        dias_venc = (b["vencimiento"] - hoy).days
 
-        with c2:
-            m1, m2, m3, m4, m5, m6 = st.columns(6)
-            m1.metric("Precio Limpio",  f"{precio_input:.2f}")
-            m2.metric("Cupón Corrido",  f"{cupon_corrido:.4f}")
-            m3.metric("Precio Sucio",   f"{precio_sucio:.4f}")
-            m4.metric("YTM",            f"{ytm*100:.2f}%" if ytm is not None else "N/D")
-            m5.metric("Duration Mac.",  f"{dur_mac:.2f} años" if dur_mac else "N/D")
-            m6.metric("Duration Mod.",  f"{dur_mod:.2f}" if dur_mod else "N/D")
+        with c_metr:
+            r1c1, r1c2, r1c3, r1c4 = st.columns(4)
+            r1c1.metric("Precio limpio",    f"{precio_input:.4f}")
+            r1c2.metric("Cupón corrido",    f"{cc:.5f}")
+            r1c3.metric("Precio sucio",     f"{ps:.4f}")
+            r1c4.metric("VN residual",      f"{vn_res:.2f}%")
+
+            r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+            r2c1.metric("Valor técnico",    f"{vt:.5f}")
+            r2c2.metric("Paridad",          f"{paridad:.6f}" if paridad else "N/D")
+            r2c3.metric("TIR (YTM)",        f"{ytm*100:.4f}%" if ytm is not None else "N/D")
+            r2c4.metric("TNA semestral",    f"{tna*100:.4f}%" if tna is not None else "N/D")
+
+            r3c1, r3c2, r3c3, r3c4 = st.columns(4)
+            r3c1.metric("Duration Mac.",    f"{dur_mac:.6f}" if dur_mac else "N/D")
+            r3c2.metric("Duration Mod.",    f"{dur_mod:.6f}" if dur_mod else "N/D")
+            r3c3.metric("Convexidad",       f"{convex:.6f}" if convex else "N/D")
+            r3c4.metric("Current yield",    f"{cy*100:.4f}%" if cy else "N/D")
 
         st.divider()
 
-        # Cash flows futuros
-        st.markdown("**Flujos de fondos futuros**")
-        cfs_raw = [(datetime.strptime(f, "%Y-%m-%d"), t, m) for f, t, m in b["cash_flows"]]
-        cfs_fut = [(d, t, m) for d, t, m in cfs_raw if d > hoy]
-        cfs_pas = [(d, t, m) for d, t, m in cfs_raw if d <= hoy]
+        # ── Cash flows ─────────────────────────────────────────────────────
+        st.markdown("**Flujos de fondos**")
+        rows = []
+        vn_iter = 100.0
+        for cd, cup, am in b["cash_flows"]:
+            frac = _frac_30_360(hoy, cd) if cd > hoy else None
+            vp   = (cup+am)/(1+ytm)**frac if (frac and ytm) else None
+            rows.append({
+                "Fecha": cd.strftime("%Y-%m-%d"),
+                "VN inicio": round(vn_iter, 4),
+                "Cupón": round(cup, 6),
+                "Amort": round(am, 4),
+                "Total": round(cup+am, 6),
+                "VP": round(vp, 6) if vp else "",
+                "Pagado": "✓" if cd <= hoy else "",
+            })
+            vn_iter -= am
+        df_cf = pd.DataFrame(rows)
 
-        df_cf = pd.DataFrame(cfs_fut, columns=["Fecha", "Tipo", "Flujo (% VN)"])
-        df_cf["Días"] = (df_cf["Fecha"] - hoy).dt.days
-        df_cf["VP"] = df_cf.apply(
-            lambda row: row["Flujo (% VN)"] / (1 + ytm) ** (row["Días"] / 365)
-            if ytm is not None else row["Flujo (% VN)"],
-            axis=1,
-        )
-        df_cf["Vencido"] = False
-
-        df_cf_pas = pd.DataFrame(cfs_pas, columns=["Fecha", "Tipo", "Flujo (% VN)"])
-        if not df_cf_pas.empty:
-            df_cf_pas["Días"] = (df_cf_pas["Fecha"] - hoy).dt.days
-            df_cf_pas["VP"] = 0.0
-            df_cf_pas["Vencido"] = True
-            df_cf_all = pd.concat([df_cf_pas, df_cf], ignore_index=True)
-        else:
-            df_cf_all = df_cf.copy()
-
-        df_cf_all["Fecha"] = df_cf_all["Fecha"].dt.strftime("%Y-%m-%d")
-
-        def _highlight_venc(row):
-            if row.get("Vencido", False):
-                return ["color: #888888"] * len(row)
+        def _grey_paid(row):
+            if row.get("Pagado") == "✓":
+                return ["color: #999"] * len(row)
             return [""] * len(row)
 
         st.dataframe(
-            df_cf_all.style.apply(_highlight_venc, axis=1)
-                     .format({"Flujo (% VN)": "{:.4f}", "VP": "{:.4f}"}),
-            use_container_width=True,
-            height=300,
+            df_cf.style.apply(_grey_paid, axis=1),
+            use_container_width=True, height=280,
         )
-        st.caption(f"Flujos pasados en gris. Precio sucio teórico = Σ VP = {df_cf['VP'].sum():.4f}")
+        st.caption(f"Σ VP futuros = {sum(r['VP'] for r in rows if isinstance(r['VP'], float)):.4f} — Precio sucio ingresado: {ps:.4f}")
 
         st.divider()
 
-        # Curva precio-YTM
-        st.markdown("**Sensibilidad precio / YTM**")
-        ytm_range = np.linspace(0.03, 0.30, 80)
-        precios_curva = [_precio_sucio_from_ytm(bond_sel, y, hoy) for y in ytm_range]
+        # ── Curva precio-YTM ───────────────────────────────────────────────
+        st.markdown("**Sensibilidad precio / TIR**")
+        ytm_range = np.linspace(0.02, 0.25, 100)
+        precios_c = [_precio_sucio_from_ytm(bond_sel, y, hoy) for y in ytm_range]
         fig_sens = go.Figure()
         fig_sens.add_trace(go.Scatter(
-            x=ytm_range * 100, y=precios_curva,
-            mode="lines", name="Precio (% VN)",
-            line=dict(color="#636EFA", width=2),
+            x=ytm_range*100, y=precios_c, mode="lines",
+            line=dict(color="#636EFA", width=2), name="Precio sucio",
         ))
         if ytm is not None:
-            fig_sens.add_vline(
-                x=ytm * 100, line_dash="dash", line_color="red",
-                annotation_text=f"YTM actual: {ytm*100:.2f}%",
-                annotation_position="top right",
-            )
+            fig_sens.add_vline(x=ytm*100, line_dash="dash", line_color="red",
+                annotation_text=f"TIR: {ytm*100:.2f}%", annotation_position="top right")
+            fig_sens.add_hline(y=ps, line_dash="dot", line_color="orange",
+                annotation_text=f"PS: {ps:.2f}", annotation_position="right")
         fig_sens.update_layout(
-            xaxis_title="YTM (%)", yaxis_title="Precio sucio (% VN)",
-            height=380, template="plotly_white",
+            xaxis_title="TIR (%)", yaxis_title="Precio sucio (% VN)",
+            height=350, template="plotly_white",
         )
         st.plotly_chart(fig_sens, use_container_width=True)
 
-        # Tabla comparativa soberanos
-        st.markdown("**Comparativa soberanos** (precio manual o MAE)")
-        comp_data = []
-        for k, bv in soberanos.items():
-            vv = datetime.strptime(bv["vencimiento"], "%Y-%m-%d")
-            dias_v = (vv - hoy).days
-            # Usar precio input solo para el bono seleccionado; los demás con precio supuesto
-            if k == bond_sel:
-                ps = precio_sucio
-            else:
-                ps = 65.0 + _cupon_corrido(k, hoy)  # placeholder
-            y = _ytm(k, ps, hoy)
-            dm = _duration_macaulay(k, ps, hoy)
-            comp_data.append({
-                "Ticker": k,
-                "Nombre": bv["nombre"],
-                "Vcto.": bv["vencimiento"],
-                "Años": round(dias_v / 365, 1),
-                "Precio (%)": round(ps - _cupon_corrido(k, hoy), 2),
-                "YTM (%)": round(y * 100, 2) if y else None,
-                "Duration": round(dm, 2) if dm else None,
-            })
-        df_comp = pd.DataFrame(comp_data)
-        st.dataframe(df_comp, use_container_width=True, hide_index=True)
-        st.caption("⚠️ Precios de otros bonos son placeholders (65%). Actualizar con precios reales.")
+        st.divider()
+
+        # ── Curva de TIRs comparativa (arbitraje GD vs AL) ────────────────
+        st.markdown("**Curva de TIRs — Soberanos USD** (ingresá precios para actualizar)")
+
+        st.caption("Ingresá precios limpios actuales para cada bono. Precios en 0 se omiten.")
+        n_bonds = len(soberanos)
+        cols_curve = st.columns(min(n_bonds, 6))
+        precios_curve = {}
+        for i, (tk, bv) in enumerate(soberanos.items()):
+            # Precargar desde data912
+            pm = None
+            if not df_live_tab2.empty:
+                row_c = df_live_tab2[df_live_tab2["symbol"].str.upper() == tk.upper()]
+                if not row_c.empty:
+                    raw_c = float(row_c.iloc[0].get("c", 0) or 0)
+                    pm = raw_c * 100 if raw_c < 5 else raw_c
+            default_p = round(pm, 2) if pm and pm > 0 else 0.0
+            with cols_curve[i % 6]:
+                precios_curve[tk] = st.number_input(
+                    tk, min_value=0.0, max_value=200.0,
+                    value=default_p, step=0.01, format="%.2f",
+                    key=f"rf_curve_{tk}",
+                )
+
+        curve_data = []
+        for tk, pl in precios_curve.items():
+            if pl <= 0:
+                continue
+            cc_k = _cupon_corrido(tk, hoy)
+            ps_k = pl + cc_k
+            y_k  = _ytm(tk, ps_k, hoy)
+            dm_k = _duration_macaulay(tk, ps_k, hoy)
+            vt_k = _valor_tecnico(tk, hoy)
+            par_k = ps_k / vt_k if vt_k > 0 else None
+            if y_k and dm_k:
+                curve_data.append({
+                    "ticker": tk, "ley": BONDS_DB[tk]["ley"],
+                    "duration": dm_k, "ytm": y_k*100,
+                    "paridad": par_k, "precio_limpio": pl,
+                    "vto": str(BONDS_DB[tk]["vencimiento"]),
+                })
+
+        if len(curve_data) >= 2:
+            df_curve = pd.DataFrame(curve_data)
+            gd = df_curve[df_curve["ley"] == "NY"]
+            al = df_curve[df_curve["ley"] == "AR"]
+
+            fig_curve = go.Figure()
+            if not gd.empty:
+                fig_curve.add_trace(go.Scatter(
+                    x=gd["duration"], y=gd["ytm"],
+                    mode="markers+lines+text",
+                    name="Ley NY (GD)", marker=dict(color="#636EFA", size=10),
+                    line=dict(dash="solid", width=1.5),
+                    text=gd["ticker"], textposition="top center",
+                ))
+            if not al.empty:
+                fig_curve.add_trace(go.Scatter(
+                    x=al["duration"], y=al["ytm"],
+                    mode="markers+lines+text",
+                    name="Ley AR (AL)", marker=dict(color="#EF553B", size=10),
+                    line=dict(dash="dot", width=1.5),
+                    text=al["ticker"], textposition="bottom center",
+                ))
+            fig_curve.update_layout(
+                title="Curva de TIRs — GD (azul) vs AL (rojo)",
+                xaxis_title="Duration Macaulay (años)",
+                yaxis_title="TIR (%)",
+                height=420, template="plotly_white",
+                hovermode="x unified",
+            )
+            st.plotly_chart(fig_curve, use_container_width=True)
+
+            # Tabla con spread GD-AL para arbitraje
+            st.markdown("**Spread GD−AL por vencimiento**")
+            spread_rows = []
+            for yr in ["2029","2030","2035","2038","2041","2046"]:
+                gd_tk = f"GD{yr[2:]}"
+                al_tk = f"AL{yr[2:]}"
+                gd_r = next((r for r in curve_data if r["ticker"]==gd_tk), None)
+                al_r = next((r for r in curve_data if r["ticker"]==al_tk), None)
+                if gd_r and al_r:
+                    spread = gd_r["ytm"] - al_r["ytm"]
+                    spread_rows.append({
+                        "Vcto": yr, "TIR GD": f"{gd_r['ytm']:.2f}%",
+                        "TIR AL": f"{al_r['ytm']:.2f}%",
+                        "Spread GD−AL (bps)": round(spread*100, 1),
+                        "Par. GD": f"{gd_r['paridad']:.4f}" if gd_r['paridad'] else "",
+                        "Par. AL": f"{al_r['paridad']:.4f}" if al_r['paridad'] else "",
+                    })
+            if spread_rows:
+                df_spread = pd.DataFrame(spread_rows)
+                def _color_spread(val):
+                    try:
+                        v = float(val)
+                        return "color: #00cc88" if v > 0 else "color: #ff4b4b"
+                    except: return ""
+                st.dataframe(
+                    df_spread.style.applymap(_color_spread, subset=["Spread GD−AL (bps)"]),
+                    use_container_width=True, hide_index=True,
+                )
+                st.caption("Spread positivo → GD rinde más (trade: comprar GD, vender AL)")
+        else:
+            st.info("Ingresá precios en al menos 2 bonos para ver la curva.")
 
     # ══════════════════════════════════════════════════════════════════════════
     # RF TAB 3 — ONs CORPORATIVAS
@@ -2372,14 +2391,14 @@ with tab6:
                             break
 
                 precio_actual = precio_actual or pos["precio_compra"]
-                cc = _cupon_corrido(tk, datetime.today()) if tk in BONDS_DB else 0.0
+                cc = _cupon_corrido(tk, datetime.today().date()) if tk in BONDS_DB else 0.0
                 ps_actual = precio_actual + cc
                 valor_actual = pos["vn"] * ps_actual / 100
                 pnl_abs = valor_actual - costo
                 pnl_pct = pnl_abs / costo * 100 if costo > 0 else 0
 
-                ytm_actual = _ytm(tk, ps_actual, datetime.today()) if tk in BONDS_DB else None
-                dur = _duration_macaulay(tk, ps_actual, datetime.today()) if tk in BONDS_DB else None
+                ytm_actual = _ytm(tk, ps_actual, datetime.today().date()) if tk in BONDS_DB else None
+                dur = _duration_macaulay(tk, ps_actual, datetime.today().date()) if tk in BONDS_DB else None
 
                 rows.append({
                     "Ticker": tk,
