@@ -5,7 +5,7 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 # --- CONFIG ---
 st.set_page_config(page_title="Dashboard", layout="wide")
