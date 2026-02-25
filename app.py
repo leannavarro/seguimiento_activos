@@ -1819,156 +1819,345 @@ with tab5:
 # ══════════════════════════════════════════════════════════════════════════════
 
 with tab6:
-    st.subheader("🏦 Renta Fija Argentina")
-
-    # ── API Key MAE ───────────────────────────────────────────────────────────
-    with st.sidebar:
-        st.divider()
-        st.subheader("🏦 MAE API Key")
-        mae_input = st.text_input(
-            "MAE API Key (A3 Mercados)",
-            type="password",
-            value=st.session_state.get("mae_api_key", ""),
-            help="API Key de A3 Mercados / MAE para datos de renta fija",
-        )
-        if mae_input:
-            st.session_state["mae_api_key"] = mae_input
-            st.success("MAE Key cargada ✓")
-        elif not _mae_key():
-            st.warning("Sin MAE Key: datos de renta fija no disponibles.")
-
-        if st.checkbox("🔍 Errores MAE", value=False):
-            errs = st.session_state.get("mae_errors", [])
-            if errs:
-                for e in errs[-5:]:
-                    st.code(e)
-            else:
-                st.success("Sin errores MAE")
+    # ── Dark theme CSS para sección RF ────────────────────────────────────────
+    st.markdown("""
+    <style>
+    /* Scope dark theme to RF section via class injection */
+    .rf-terminal {
+        background: #0d1117;
+        border-radius: 8px;
+        padding: 0;
+    }
+    /* Override Streamlit dataframe background in RF */
+    section[data-testid="stMain"] .stDataFrame {
+        background: transparent;
+    }
+    /* Tab styling — terminal look */
+    .stTabs [data-baseweb="tab-list"] {
+        background: #0d1117;
+        border-bottom: 1px solid #21262d;
+        gap: 0;
+    }
+    .stTabs [data-baseweb="tab"] {
+        background: transparent;
+        color: #8b949e;
+        font-family: 'JetBrains Mono', 'Fira Code', monospace;
+        font-size: 12px;
+        letter-spacing: 0.05em;
+        border-radius: 0;
+        padding: 10px 20px;
+        border-bottom: 2px solid transparent;
+        text-transform: uppercase;
+    }
+    .stTabs [aria-selected="true"] {
+        background: transparent !important;
+        color: #58a6ff !important;
+        border-bottom: 2px solid #58a6ff !important;
+    }
+    .stTabs [data-baseweb="tab-panel"] {
+        background: #0d1117;
+        padding: 16px 0 0 0;
+    }
+    /* Metric cards */
+    [data-testid="stMetric"] {
+        background: #161b22;
+        border: 1px solid #21262d;
+        border-radius: 6px;
+        padding: 12px 16px;
+    }
+    [data-testid="stMetricLabel"] {
+        color: #8b949e !important;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px !important;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+    }
+    [data-testid="stMetricValue"] {
+        color: #e6edf3 !important;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 20px !important;
+    }
+    [data-testid="stMetricDelta"] {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 12px !important;
+    }
+    /* Section headers */
+    .rf-section-header {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: #58a6ff;
+        border-left: 3px solid #58a6ff;
+        padding-left: 10px;
+        margin: 20px 0 12px 0;
+    }
+    /* Asset class badge */
+    .asset-badge {
+        display: inline-block;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        padding: 2px 8px;
+        border-radius: 3px;
+        text-transform: uppercase;
+    }
+    .badge-hard-usd { background: #1f3a1f; color: #3fb950; border: 1px solid #3fb950; }
+    .badge-cer      { background: #1a2f4a; color: #58a6ff; border: 1px solid #58a6ff; }
+    .badge-tasa     { background: #3a2a1a; color: #e3b341; border: 1px solid #e3b341; }
+    .badge-dl       { background: #2a1a3a; color: #bc8cff; border: 1px solid #bc8cff; }
+    /* Divider */
+    .rf-divider {
+        border: none;
+        border-top: 1px solid #21262d;
+        margin: 16px 0;
+    }
+    /* Number input dark */
+    .stNumberInput input {
+        background: #161b22 !important;
+        color: #e6edf3 !important;
+        border-color: #30363d !important;
+        font-family: 'JetBrains Mono', monospace;
+    }
+    /* Selectbox dark */
+    .stSelectbox [data-baseweb="select"] {
+        background: #161b22 !important;
+        border-color: #30363d !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
     has_mae = bool(_mae_key())
 
-    rf_tab1, rf_tab2, rf_tab3, rf_tab4, rf_tab5 = st.tabs([
-        "📡 Mercado Hoy", "📊 Análisis de Bonos", "📈 ONs Corporativas", "💼 Mi Cartera RF", "📐 Curva & Escenarios"
+    st.markdown(
+        '<div style="display:flex;align-items:center;gap:12px;margin-bottom:4px;">'
+        '<span style="font-family:JetBrains Mono,monospace;font-size:22px;'
+        'font-weight:700;color:#e6edf3;letter-spacing:-0.02em;">RENTA FIJA</span>'
+        '<span style="font-family:JetBrains Mono,monospace;font-size:11px;'
+        'color:#58a6ff;letter-spacing:0.1em;text-transform:uppercase;'
+        'border:1px solid #58a6ff;padding:2px 8px;border-radius:3px;">ARG</span>'
+        '<span style="font-family:JetBrains Mono,monospace;font-size:11px;'
+        'color:#8b949e;margin-left:auto;">data912.com</span>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    rf_tab1, rf_tab2, rf_tab3, rf_tab4, rf_tab5, rf_tab6 = st.tabs([
+        "MERCADO", "ANÁLISIS", "ONs", "CARTERA", "CURVA & ESCENARIOS", "CALENDARIO"
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
-    # RF TAB 1 — MERCADO HOY (cotizaciones intraday)
+    # RF TAB 1 — MERCADO HOY
     # ══════════════════════════════════════════════════════════════════════════
     with rf_tab1:
-        st.markdown("#### Cotizaciones en tiempo real — data912.com")
-
         df_live = d912_live_bonds()
 
         if df_live.empty:
             st.warning("Sin datos. data912.com puede estar fuera de servicio.")
-            errs = st.session_state.get("d912_errors", [])
-            if errs:
-                st.code(errs[-1])
         else:
-            def _clasificar(sym):
+            # ── Clasificación extendida ───────────────────────────────────
+            def _clase(sym):
                 s = str(sym).upper()
-                if s.startswith("GD"):  return "Global USD"
-                if s.startswith("AL"):  return "Bonar USD"
-                if s.startswith("AE"):  return "AE USD"
-                if s.startswith("TX"):  return "CER ARS"
-                if s.startswith("X"):   return "Dollar-linked"
-                if any(s.startswith(p) for p in ["S2","S3","T2","T3","BL","BU","BG","PM"]):
-                    return "Lecap/Boncap"
+                # Strip suffix
+                base = s.rstrip("CD")
+                # Hard dollar soberanos
+                if any(base == t for t in ["GD29","GD30","GD35","GD38","GD41","GD46",
+                                            "AL29","AL30","AL35","AL38","AL41","AL46","AE38"]):
+                    return "Hard Dollar"
+                if s.startswith("TX") or s.startswith("CER") or base in ["TC25","TC26","TZ26","TZ28"]:
+                    return "CER"
+                if s.startswith("BP") or s.startswith("BPOA") or s.startswith("BPOB") or s.startswith("BPOC"):
+                    return "BOPREAL"
+                if s.startswith("TV") or s.startswith("TDG") or s.startswith("T2V") or s.startswith("T3V"):
+                    return "Dollar-linked"
+                if any(s.startswith(p) for p in ["S","BL","BU","BG","PM","T4","T6","TTM","TZX"]):
+                    return "Tasa Fija / Lecap"
+                if s.startswith("T") and len(s) <= 5:
+                    return "Tasa Fija / Lecap"
                 return "Otros"
 
-            df_live["clase"] = df_live["symbol"].apply(_clasificar)
+            def _ley(sym):
+                s = str(sym).upper().rstrip("CD")
+                if any(s == t for t in ["GD29","GD30","GD35","GD38","GD41","GD46"]):
+                    return "NY"
+                if any(s == t for t in ["AL29","AL30","AL35","AL38","AL41","AL46","AE38"]):
+                    return "AR"
+                return ""
+
+            df_live["clase"] = df_live["symbol"].apply(_clase)
+            df_live["ley"]   = df_live["symbol"].apply(_ley)
+
+            # ── Métricas header ───────────────────────────────────────────
             activos = df_live[df_live["v"] > 0]
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Total", len(df_live))
+            hd = df_live[df_live["clase"] == "Hard Dollar"]
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Instrumentos", len(df_live))
             m2.metric("Con operaciones", len(activos))
-            m3.metric("Sob. USD", len(df_live[df_live["clase"].isin(["Global USD","Bonar USD","AE USD"])]))
-            m4.metric("Tasa/ARS", len(df_live[df_live["clase"].isin(["Lecap/Boncap","CER ARS"])]))
+            m3.metric("Hard Dollar", len(hd))
+            m4.metric("CER / Tasa", len(df_live[df_live["clase"].isin(["CER","Tasa Fija / Lecap"])]))
+            m5.metric("Última act.", datetime.now().strftime("%H:%M:%S"))
 
-            st.divider()
+            st.markdown('<hr class="rf-divider">', unsafe_allow_html=True)
 
-            fc1, fc2 = st.columns(2)
-            with fc1:
-                clases_disp = sorted(df_live["clase"].unique())
-                clases_sel = st.multiselect(
-                    "Clase", clases_disp,
-                    default=[c for c in ["Global USD","Bonar USD","AE USD"] if c in clases_disp],
-                    key="rf_clase_filter",
-                )
-            with fc2:
-                solo_op = st.checkbox("Solo con operaciones hoy", value=True, key="rf_op_filter")
+            # ── Sección HARD DOLLAR — tabla con D/C separados ─────────────
+            st.markdown('<div class="rf-section-header">Hard Dollar — Soberanos USD</div>', unsafe_allow_html=True)
 
-            df_show = df_live.copy()
-            if clases_sel:
-                df_show = df_show[df_show["clase"].isin(clases_sel)]
-            if solo_op:
-                df_show = df_show[df_show["v"] > 0]
+            SOBERANOS_BASE = ["GD29","GD30","GD35","GD38","GD41","GD46",
+                               "AL29","AL30","AL35","AL38","AL41","AL46","AE38"]
 
-            if df_show.empty:
-                st.info("Sin instrumentos con los filtros seleccionados.")
-            else:
-                cols_map = {"symbol":"Ticker","clase":"Clase","px_bid":"Bid","px_ask":"Ask",
-                            "c":"Último","pct_change":"Var. %","v":"Volumen (VN)","q_op":"Operaciones"}
-                df_disp = df_show[[c for c in cols_map if c in df_show.columns]].rename(columns=cols_map)
-                df_disp = df_disp.sort_values("Var. %", ascending=False)
+            def _get_price(df, ticker, suffix=""):
+                sym = (ticker + suffix).upper()
+                row = df[df["symbol"].str.upper() == sym]
+                if row.empty:
+                    return None, None, None
+                r = row.iloc[0]
+                return (float(r.get("c",0) or 0),
+                        float(r.get("pct_change",0) or 0),
+                        float(r.get("v",0) or 0))
 
-                def _color_var(val):
-                    if pd.isna(val): return ""
-                    return "color: #00cc88" if val > 0 else ("color: #ff4b4b" if val < 0 else "")
+            hoy_t1 = datetime.today().date()
+            hard_rows = []
+            for tk in SOBERANOS_BASE:
+                p_ars, var_ars, _ = _get_price(df_live, tk, "")
+                p_d,   var_d,   _ = _get_price(df_live, tk, "D")  # cable
+                p_c,   var_c,   _ = _get_price(df_live, tk, "C")  # MEP/CCL
+                vol, _, _         = _get_price(df_live, tk, "")
 
-                st.dataframe(
-                    df_disp.style.applymap(_color_var, subset=["Var. %"])
-                        .format({"Bid":"{:.4f}","Ask":"{:.4f}","Último":"{:.4f}",
-                                 "Var. %":"{:.2f}%","Volumen (VN)":"{:,.0f}","Operaciones":"{:.0f}"}),
-                    use_container_width=True, height=430,
-                )
-                st.caption(f"Fuente: data912.com · {len(df_show)} instrumentos · Actualizado c/2 min")
+                # Calcular TIR y Duration si tenemos precio D
+                tir, dur, par = None, None, None
+                if p_d and p_d > 0 and tk in BONDS_DB:
+                    pl_d = p_d if p_d > 5 else p_d * 100
+                    cc   = _cupon_corrido(tk, hoy_t1)
+                    ps_d = pl_d + cc
+                    tir  = _ytm(tk, ps_d, hoy_t1)
+                    dur  = _duration_macaulay(tk, ps_d, hoy_t1)
+                    par  = _paridad(tk, ps_d, hoy_t1)
 
-                df_var = df_show[df_show["pct_change"] != 0].copy()
-                if len(df_var) >= 3:
-                    df_bar = df_var.reindex(df_var["pct_change"].abs().nlargest(20).index).sort_values("pct_change")
-                    fig_var = go.Figure(go.Bar(
-                        x=df_bar["pct_change"], y=df_bar["symbol"], orientation="h",
-                        marker_color=["#00cc88" if v >= 0 else "#ff4b4b" for v in df_bar["pct_change"]],
-                        text=df_bar["pct_change"].round(2).astype(str) + "%",
-                        textposition="outside",
-                    ))
-                    fig_var.update_layout(
-                        title="Top 20 variaciones del día", xaxis_title="Variación %",
-                        height=max(350, len(df_bar)*22), template="plotly_white", margin=dict(l=100),
+                ley = "NY" if tk.startswith("G") or tk == "AE38" else "AR"
+                hard_rows.append({
+                    "Ticker": tk,
+                    "Ley": ley,
+                    "ARS": f"{p_ars:,.0f}" if p_ars else "—",
+                    "Cable (D)": round(p_d, 2) if p_d else None,
+                    "Var D %": round(var_d, 2) if var_d is not None else None,
+                    "MEP/CCL (C)": round(p_c, 2) if p_c else None,
+                    "Var C %": round(var_c, 2) if var_c is not None else None,
+                    "TIR": round(tir * 100, 3) if tir else None,
+                    "Duration": round(dur, 2) if dur else None,
+                    "Paridad": round(par, 4) if par else None,
+                })
+
+            df_hard = pd.DataFrame(hard_rows)
+
+            def _color_var_hard(val):
+                if val is None or (isinstance(val, float) and pd.isna(val)):
+                    return "color: #8b949e"
+                try:
+                    v = float(val)
+                    if v > 0:   return "color: #3fb950; font-family: JetBrains Mono, monospace"
+                    if v < 0:   return "color: #f85149; font-family: JetBrains Mono, monospace"
+                    return "color: #8b949e; font-family: JetBrains Mono, monospace"
+                except:
+                    return "font-family: JetBrains Mono, monospace"
+
+            def _mono(val):
+                return "font-family: JetBrains Mono, monospace; font-size: 13px"
+
+            styled = (df_hard.style
+                .applymap(_color_var_hard, subset=["Var D %", "Var C %"])
+                .applymap(_mono, subset=["Cable (D)", "MEP/CCL (C)", "TIR", "Duration", "Paridad"])
+                .format({
+                    "Cable (D)":   lambda x: f"{x:.2f}" if x else "—",
+                    "Var D %":     lambda x: f"{x:+.2f}%" if x is not None and not pd.isna(x) else "—",
+                    "MEP/CCL (C)": lambda x: f"{x:.2f}" if x else "—",
+                    "Var C %":     lambda x: f"{x:+.2f}%" if x is not None and not pd.isna(x) else "—",
+                    "TIR":         lambda x: f"{x:.3f}%" if x else "—",
+                    "Duration":    lambda x: f"{x:.2f}" if x else "—",
+                    "Paridad":     lambda x: f"{x:.4f}" if x else "—",
+                }, na_rep="—")
+            )
+            st.dataframe(styled, use_container_width=True, hide_index=True, height=530)
+            st.caption("D = Cable USD · C = MEP/CCL · TIR calculada sobre precio cable · Fuente: data912.com")
+
+            st.markdown('<hr class="rf-divider">', unsafe_allow_html=True)
+
+            # ── Otras clases (colapsables) ────────────────────────────────
+            otras_clases = [c for c in ["CER","Tasa Fija / Lecap","Dollar-linked","BOPREAL","Otros"]
+                             if c in df_live["clase"].values]
+
+            for clase in otras_clases:
+                df_clase = df_live[(df_live["clase"] == clase) & (df_live["v"] > 0)].copy()
+                if df_clase.empty:
+                    continue
+                badge_map = {
+                    "CER":             ("badge-cer",  "CER"),
+                    "Tasa Fija / Lecap":("badge-tasa","TASA FIJA"),
+                    "Dollar-linked":   ("badge-dl",   "DOLLAR-LINKED"),
+                    "BOPREAL":         ("badge-hard-usd","BOPREAL"),
+                    "Otros":           ("badge-tasa", "OTROS"),
+                }
+                badge_cls, badge_txt = badge_map.get(clase, ("badge-tasa", clase.upper()))
+                with st.expander(f"**{clase}** — {len(df_clase)} instrumentos con operaciones", expanded=False):
+                    cols_show = ["symbol","c","pct_change","v","q_op"]
+                    cols_show = [c for c in cols_show if c in df_clase.columns]
+                    df_oc = df_clase[cols_show].rename(columns={
+                        "symbol":"Ticker","c":"Último","pct_change":"Var %",
+                        "v":"Volumen","q_op":"Operaciones"
+                    }).sort_values("Var %", ascending=False)
+                    def _cv(val):
+                        try:
+                            return "color: #3fb950" if float(val) > 0 else ("color: #f85149" if float(val) < 0 else "")
+                        except: return ""
+                    st.dataframe(
+                        df_oc.style.applymap(_cv, subset=["Var %"])
+                             .format({"Último":"{:.4f}","Var %":"{:+.2f}%",
+                                      "Volumen":"{:,.0f}","Operaciones":"{:.0f}"}, na_rep="—"),
+                        use_container_width=True, hide_index=True, height=250,
                     )
-                    st.plotly_chart(fig_var, use_container_width=True)
 
-                st.divider()
-                st.markdown("**Serie histórica**")
-                sym_sel = st.selectbox("Ticker", df_show["symbol"].tolist(), key="rf_sym_hist")
-                if sym_sel:
-                    df_hist = d912_historical(sym_sel)
-                    if df_hist.empty:
-                        st.warning(f"Sin histórico para {sym_sel}")
-                    else:
-                        periodo = st.select_slider("Período", ["3M","6M","1Y","2Y","Todo"],
-                                                    value="1Y", key="rf_hist_period")
-                        dias_map = {"3M":90,"6M":180,"1Y":252,"2Y":504,"Todo":99999}
-                        df_p = df_hist.tail(dias_map[periodo])
-                        fig_h = go.Figure()
-                        fig_h.add_trace(go.Scatter(
-                            x=df_p["date"], y=df_p["c"], mode="lines", name="Cierre",
-                            line=dict(color="#636EFA", width=2),
-                            fill="tozeroy", fillcolor="rgba(99,110,250,0.08)",
-                        ))
-                        fig_h.update_layout(
-                            title=f"{sym_sel} — Precio histórico", yaxis_title="Precio",
-                            height=350, template="plotly_white", hovermode="x unified",
-                        )
-                        st.plotly_chart(fig_h, use_container_width=True)
-                        st.caption(f"{len(df_p)} ruedas · {df_p['date'].iloc[0].date()} → {df_p['date'].iloc[-1].date()}")
+            st.markdown('<hr class="rf-divider">', unsafe_allow_html=True)
+
+            # ── Serie histórica ───────────────────────────────────────────
+            st.markdown('<div class="rf-section-header">Serie histórica</div>', unsafe_allow_html=True)
+            col_sym, col_per = st.columns([2,1])
+            with col_sym:
+                all_syms = sorted(df_live["symbol"].tolist())
+                default_sym = "GD30D" if "GD30D" in all_syms else (all_syms[0] if all_syms else None)
+                sym_sel = st.selectbox("Ticker", all_syms,
+                                        index=all_syms.index(default_sym) if default_sym in all_syms else 0,
+                                        key="rf_sym_hist")
+            with col_per:
+                periodo = st.select_slider("Período", ["3M","6M","1Y","2Y","Todo"], value="1Y", key="rf_hist_period")
+
+            if sym_sel:
+                df_hist = d912_historical(sym_sel)
+                if not df_hist.empty:
+                    dias_map = {"3M":90,"6M":180,"1Y":252,"2Y":504,"Todo":99999}
+                    df_p = df_hist.tail(dias_map[periodo])
+                    fig_h = go.Figure()
+                    fig_h.add_trace(go.Scatter(
+                        x=df_p["date"], y=df_p["c"], mode="lines", name="Cierre",
+                        line=dict(color="#58a6ff", width=1.8),
+                        fill="tozeroy", fillcolor="rgba(88,166,255,0.06)",
+                    ))
+                    fig_h.update_layout(
+                        paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+                        font=dict(color="#8b949e", family="JetBrains Mono, monospace", size=11),
+                        title=dict(text=f"{sym_sel}", font=dict(color="#e6edf3", size=14)),
+                        xaxis=dict(gridcolor="#21262d", linecolor="#30363d"),
+                        yaxis=dict(gridcolor="#21262d", linecolor="#30363d", title="Precio"),
+                        height=320, hovermode="x unified",
+                        margin=dict(l=10, r=10, t=40, b=10),
+                    )
+                    st.plotly_chart(fig_h, use_container_width=True)
+                    st.caption(f"{len(df_p)} ruedas · {df_p['date'].iloc[0].date()} → {df_p['date'].iloc[-1].date()}")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # RF TAB 2 — ANÁLISIS DE BONOS (soberanos con math)
+    # RF TAB 2 — ANÁLISIS DE BONOS
     # ══════════════════════════════════════════════════════════════════════════
     with rf_tab2:
-        st.markdown("#### Análisis cuantitativo — Soberanos USD")
+        st.markdown('<div class="rf-section-header">Análisis cuantitativo — Soberanos USD</div>', unsafe_allow_html=True)
 
         soberanos = {k: v for k, v in BONDS_DB.items() if v["tipo"] == "Soberano"}
         bond_sel = st.selectbox(
@@ -1981,39 +2170,32 @@ with tab6:
         b   = BONDS_DB[bond_sel]
         hoy = datetime.today().date()
 
-        # Precargar precio desde data912 live — buscar ticker USD (sufijo D primero)
+        # Precargar precio D
         precio_mercado = None
         df_live_tab2 = d912_live_bonds()
         if not df_live_tab2.empty:
-            syms_to_try = [bond_sel + "D", bond_sel]  # GD29D primero, luego GD29
-            for sym in syms_to_try:
+            for sym in [bond_sel + "D", bond_sel]:
                 row = df_live_tab2[df_live_tab2["symbol"].str.upper() == sym.upper()]
                 if not row.empty:
                     raw = float(row.iloc[0].get("c", 0) or 0)
-                    if raw <= 0:
-                        continue
-                    # Normalizar: ratio (<5) → *100, precio razonable (<200) → usar
-                    if raw < 5:
-                        raw *= 100
+                    if raw <= 0: continue
+                    if raw < 5: raw *= 100
                     if raw <= 200:
                         precio_mercado = raw
-                        break  # precio válido encontrado
+                        break
 
-        # Input precio
         c_inp, c_metr = st.columns([1, 3])
         with c_inp:
             precio_input = st.number_input(
                 "Precio limpio (% VN)",
                 min_value=0.1, max_value=200.0,
-                value=float(round(min(max(precio_mercado, 0.1), 199.0), 2)) if precio_mercado and precio_mercado > 0 else 63.0,
+                value=float(round(min(max(precio_mercado, 0.1), 199.0), 2)) if precio_mercado else 63.0,
                 step=0.01, format="%.2f",
                 key="rf_precio_input",
-                help="Precio limpio = cotización de mercado (sin cupón corrido)"
             )
             if precio_mercado:
-                st.caption(f"📡 data912: {precio_mercado:.2f}")
+                st.caption(f"📡 data912 cable: {precio_mercado:.2f}")
 
-        # Calcular métricas
         cc        = _cupon_corrido(bond_sel, hoy)
         ps        = precio_input + cc
         ytm       = _ytm(bond_sel, ps, hoy)
@@ -2025,31 +2207,27 @@ with tab6:
         cy        = _current_yield(bond_sel, ps, hoy)
         tna       = _tna_from_ytm(ytm)
         vn_res    = _current_vn(bond_sel, hoy)
-        dias_venc = (b["vencimiento"] - hoy).days
 
         with c_metr:
             r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-            r1c1.metric("Precio limpio",    f"{precio_input:.4f}")
-            r1c2.metric("Cupón corrido",    f"{cc:.5f}")
-            r1c3.metric("Precio sucio",     f"{ps:.4f}")
-            r1c4.metric("VN residual",      f"{vn_res:.2f}%")
-
+            r1c1.metric("Precio limpio",  f"{precio_input:.4f}")
+            r1c2.metric("Cupón corrido",  f"{cc:.5f}")
+            r1c3.metric("Precio sucio",   f"{ps:.4f}")
+            r1c4.metric("VN residual",    f"{vn_res:.2f}%")
             r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-            r2c1.metric("Valor técnico",    f"{vt:.5f}")
-            r2c2.metric("Paridad",          f"{paridad:.6f}" if paridad else "N/D")
-            r2c3.metric("TIR (YTM)",        f"{ytm*100:.4f}%" if ytm is not None else "N/D")
-            r2c4.metric("TNA semestral",    f"{tna*100:.4f}%" if tna is not None else "N/D")
-
+            r2c1.metric("Valor técnico",  f"{vt:.5f}")
+            r2c2.metric("Paridad",        f"{paridad:.6f}" if paridad else "N/D")
+            r2c3.metric("TIR (YTM)",      f"{ytm*100:.4f}%" if ytm is not None else "N/D")
+            r2c4.metric("TNA semestral",  f"{tna*100:.4f}%" if tna is not None else "N/D")
             r3c1, r3c2, r3c3, r3c4 = st.columns(4)
-            r3c1.metric("Duration Mac.",    f"{dur_mac:.6f}" if dur_mac else "N/D")
-            r3c2.metric("Duration Mod.",    f"{dur_mod:.6f}" if dur_mod else "N/D")
-            r3c3.metric("Convexidad",       f"{convex:.6f}" if convex else "N/D")
-            r3c4.metric("Current yield",    f"{cy*100:.4f}%" if cy else "N/D")
+            r3c1.metric("Duration Mac.",  f"{dur_mac:.6f}" if dur_mac else "N/D")
+            r3c2.metric("Duration Mod.",  f"{dur_mod:.6f}" if dur_mod else "N/D")
+            r3c3.metric("Convexidad",     f"{convex:.6f}" if convex else "N/D")
+            r3c4.metric("Current yield",  f"{cy*100:.4f}%" if cy else "N/D")
 
-        st.divider()
+        st.markdown('<hr class="rf-divider">', unsafe_allow_html=True)
+        st.markdown('<div class="rf-section-header">Flujos de fondos</div>', unsafe_allow_html=True)
 
-        # ── Cash flows ─────────────────────────────────────────────────────
-        st.markdown("**Flujos de fondos**")
         rows = []
         vn_iter = 100.0
         for cd, cup, am in b["cash_flows"]:
@@ -2062,165 +2240,56 @@ with tab6:
                 "Amort": round(am, 4),
                 "Total": round(cup+am, 6),
                 "VP": round(vp, 6) if vp else "",
-                "Pagado": "✓" if cd <= hoy else "",
+                "✓": "✓" if cd <= hoy else "",
             })
             vn_iter -= am
         df_cf = pd.DataFrame(rows)
 
         def _grey_paid(row):
-            if row.get("Pagado") == "✓":
-                return ["color: #999"] * len(row)
-            return [""] * len(row)
+            if row.get("✓") == "✓":
+                return ["color: #4a5568"] * len(row)
+            return ["color: #e6edf3; font-family: JetBrains Mono, monospace"] * len(row)
 
-        st.dataframe(
-            df_cf.style.apply(_grey_paid, axis=1),
-            use_container_width=True, height=280,
-        )
-        st.caption(f"Σ VP futuros = {sum(r['VP'] for r in rows if isinstance(r['VP'], float)):.4f} — Precio sucio ingresado: {ps:.4f}")
+        st.dataframe(df_cf.style.apply(_grey_paid, axis=1),
+                     use_container_width=True, height=280)
+        st.caption(f"Σ VP futuros = {sum(r['VP'] for r in rows if isinstance(r['VP'], float)):.4f}")
 
-        st.divider()
+        st.markdown('<hr class="rf-divider">', unsafe_allow_html=True)
+        st.markdown('<div class="rf-section-header">Sensibilidad precio / TIR</div>', unsafe_allow_html=True)
 
-        # ── Curva precio-YTM ───────────────────────────────────────────────
-        st.markdown("**Sensibilidad precio / TIR**")
         ytm_range = np.linspace(0.02, 0.25, 100)
         precios_c = [_precio_sucio_from_ytm(bond_sel, y, hoy) for y in ytm_range]
         fig_sens = go.Figure()
         fig_sens.add_trace(go.Scatter(
             x=ytm_range*100, y=precios_c, mode="lines",
-            line=dict(color="#636EFA", width=2), name="Precio sucio",
+            line=dict(color="#58a6ff", width=2), name="Precio sucio",
         ))
         if ytm is not None:
-            fig_sens.add_vline(x=ytm*100, line_dash="dash", line_color="red",
-                annotation_text=f"TIR: {ytm*100:.2f}%", annotation_position="top right")
-            fig_sens.add_hline(y=ps, line_dash="dot", line_color="orange",
-                annotation_text=f"PS: {ps:.2f}", annotation_position="right")
+            fig_sens.add_vline(x=ytm*100, line_dash="dash", line_color="#f85149",
+                annotation_text=f"TIR: {ytm*100:.2f}%",
+                annotation_font=dict(color="#f85149", family="JetBrains Mono"),
+                annotation_position="top right")
+            fig_sens.add_hline(y=ps, line_dash="dot", line_color="#e3b341",
+                annotation_text=f"PS: {ps:.2f}",
+                annotation_font=dict(color="#e3b341", family="JetBrains Mono"),
+                annotation_position="right")
         fig_sens.update_layout(
-            xaxis_title="TIR (%)", yaxis_title="Precio sucio (% VN)",
-            height=350, template="plotly_white",
+            paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+            font=dict(color="#8b949e", family="JetBrains Mono, monospace", size=11),
+            xaxis=dict(title="TIR (%)", gridcolor="#21262d", linecolor="#30363d"),
+            yaxis=dict(title="Precio sucio (% VN)", gridcolor="#21262d", linecolor="#30363d"),
+            height=340, margin=dict(l=10, r=10, t=20, b=10),
         )
         st.plotly_chart(fig_sens, use_container_width=True)
-
-        st.divider()
-
-        # ── Curva de TIRs comparativa (arbitraje GD vs AL) ────────────────
-        st.markdown("**Curva de TIRs — Soberanos USD** (ingresá precios para actualizar)")
-
-        st.caption("Ingresá precios limpios actuales para cada bono. Precios en 0 se omiten.")
-        n_bonds = len(soberanos)
-        cols_curve = st.columns(min(n_bonds, 6))
-        precios_curve = {}
-        for i, (tk, bv) in enumerate(soberanos.items()):
-            # Precargar desde data912
-            pm = None
-            if not df_live_tab2.empty:
-                for sym in [tk + "D", tk]:
-                    row_c = df_live_tab2[df_live_tab2["symbol"].str.upper() == sym.upper()]
-                    if not row_c.empty:
-                        raw_c = float(row_c.iloc[0].get("c", 0) or 0)
-                        if raw_c <= 0:
-                            continue
-                        if raw_c < 5:
-                            raw_c *= 100
-                        if raw_c <= 200:
-                            pm = raw_c
-                            break
-            default_p = round(min(max(pm, 0.0), 199.0), 2) if pm and pm > 0 else 0.0
-            with cols_curve[i % 6]:
-                precios_curve[tk] = st.number_input(
-                    tk, min_value=0.0, max_value=200.0,
-                    value=default_p, step=0.01, format="%.2f",
-                    key=f"rf_curve_{tk}",
-                )
-
-        curve_data = []
-        for tk, pl in precios_curve.items():
-            if pl <= 0:
-                continue
-            cc_k = _cupon_corrido(tk, hoy)
-            ps_k = pl + cc_k
-            y_k  = _ytm(tk, ps_k, hoy)
-            dm_k = _duration_macaulay(tk, ps_k, hoy)
-            vt_k = _valor_tecnico(tk, hoy)
-            par_k = ps_k / vt_k if vt_k > 0 else None
-            if y_k and dm_k:
-                curve_data.append({
-                    "ticker": tk, "ley": BONDS_DB[tk]["ley"],
-                    "duration": dm_k, "ytm": y_k*100,
-                    "paridad": par_k, "precio_limpio": pl,
-                    "vto": str(BONDS_DB[tk]["vencimiento"]),
-                })
-
-        if len(curve_data) >= 2:
-            df_curve = pd.DataFrame(curve_data)
-            gd = df_curve[df_curve["ley"] == "NY"]
-            al = df_curve[df_curve["ley"] == "AR"]
-
-            fig_curve = go.Figure()
-            if not gd.empty:
-                fig_curve.add_trace(go.Scatter(
-                    x=gd["duration"], y=gd["ytm"],
-                    mode="markers+lines+text",
-                    name="Ley NY (GD)", marker=dict(color="#636EFA", size=10),
-                    line=dict(dash="solid", width=1.5),
-                    text=gd["ticker"], textposition="top center",
-                ))
-            if not al.empty:
-                fig_curve.add_trace(go.Scatter(
-                    x=al["duration"], y=al["ytm"],
-                    mode="markers+lines+text",
-                    name="Ley AR (AL)", marker=dict(color="#EF553B", size=10),
-                    line=dict(dash="dot", width=1.5),
-                    text=al["ticker"], textposition="bottom center",
-                ))
-            fig_curve.update_layout(
-                title="Curva de TIRs — GD (azul) vs AL (rojo)",
-                xaxis_title="Duration Macaulay (años)",
-                yaxis_title="TIR (%)",
-                height=420, template="plotly_white",
-                hovermode="x unified",
-            )
-            st.plotly_chart(fig_curve, use_container_width=True)
-
-            # Tabla con spread GD-AL para arbitraje
-            st.markdown("**Spread GD−AL por vencimiento**")
-            spread_rows = []
-            for yr in ["2029","2030","2035","2038","2041","2046"]:
-                gd_tk = f"GD{yr[2:]}"
-                al_tk = f"AL{yr[2:]}"
-                gd_r = next((r for r in curve_data if r["ticker"]==gd_tk), None)
-                al_r = next((r for r in curve_data if r["ticker"]==al_tk), None)
-                if gd_r and al_r:
-                    spread = gd_r["ytm"] - al_r["ytm"]
-                    spread_rows.append({
-                        "Vcto": yr, "TIR GD": f"{gd_r['ytm']:.2f}%",
-                        "TIR AL": f"{al_r['ytm']:.2f}%",
-                        "Spread GD−AL (bps)": round(spread*100, 1),
-                        "Par. GD": f"{gd_r['paridad']:.4f}" if gd_r['paridad'] else "",
-                        "Par. AL": f"{al_r['paridad']:.4f}" if al_r['paridad'] else "",
-                    })
-            if spread_rows:
-                df_spread = pd.DataFrame(spread_rows)
-                def _color_spread(val):
-                    try:
-                        v = float(val)
-                        return "color: #00cc88" if v > 0 else "color: #ff4b4b"
-                    except: return ""
-                st.dataframe(
-                    df_spread.style.applymap(_color_spread, subset=["Spread GD−AL (bps)"]),
-                    use_container_width=True, hide_index=True,
-                )
-                st.caption("Spread positivo → GD rinde más (trade: comprar GD, vender AL)")
-        else:
-            st.info("Ingresá precios en al menos 2 bonos para ver la curva.")
 
     # ══════════════════════════════════════════════════════════════════════════
     # RF TAB 3 — ONs CORPORATIVAS
     # ══════════════════════════════════════════════════════════════════════════
     with rf_tab3:
-        st.markdown("#### Obligaciones Negociables Corporativas — MAE Segmento 5")
+        st.markdown('<div class="rf-section-header">Obligaciones Negociables Corporativas — MAE Segmento 5</div>', unsafe_allow_html=True)
 
         if not has_mae:
-            st.info("Ingresá la MAE API Key en el sidebar.")
+            st.info("Ingresá la MAE API Key en Streamlit Secrets para acceder a datos de ONs.")
         else:
             hoy_str = datetime.today().strftime("%Y-%m-%d")
             dow = datetime.today().weekday()
@@ -2234,267 +2303,144 @@ with tab6:
             boletin_data = mae_boletin(fetch_date)
 
             if MAE_SEG_ONS not in boletin_data:
-                st.warning(f"Sin datos de ONs para {fetch_date}. Intentá con otra fecha.")
+                st.warning(f"Sin datos de ONs para {fetch_date}.")
                 fecha_manual = st.date_input("Fecha alternativa", key="rf_fecha_on")
                 if st.button("Cargar", key="rf_load_on"):
                     boletin_data = mae_boletin(str(fecha_manual))
-            
+
             if MAE_SEG_ONS in boletin_data:
                 df_ons = boletin_data[MAE_SEG_ONS].copy()
-
-                # Filtrar: solo plazo CI (000) y precio > 0
                 df_ons_ci = df_ons[
                     (df_ons["plazo"].astype(str) == "000") &
                     (df_ons["precio_cierre"] > 0)
                 ].copy()
 
-                # Normalizar precio: en segmento 5 viene como 100x (ej. 151020 = 1510.20 = 15.102% ??)
-                # Revisando los datos: VSCOO precioCierreHoy=148550, precioPromedioPonderado=1485.5
-                # → precioCierreHoy = precioPromedioPonderado * 100
-                # → precio real en % VN = precioPromedioPonderado (ej. 1485.5 = 1485.5% = 14.855 sobre VN 100?)
-                # Para ONs USD bullet: precio en % VN típicamente 90-110
-                # precioCierreHoy=102 para T662OD → precio=1.02 → 102% VN ✓ (moneda D)
-                # precioCierreHoy=148550 para VSCOO (moneda $) → 148550/100 = 1485.5 = precio en pesos?
-                # Concluimos: para moneda D → precioCierreHoy = precio % VN directamente
-                #             para moneda $ → precio en pesos nominales
-                def _precio_on(row):
-                    if row["monedaCodigo"] == "D":
-                        return row["precio_cierre"]   # ya en % VN
-                    else:
-                        return row["precio_cierre"]   # en pesos — no normalizable sin TC
-
-                df_ons_ci["precio_norm"] = df_ons_ci.apply(_precio_on, axis=1)
-
-                # Filtros UI
-                col_f1, col_f2 = st.columns(2)
-                with col_f1:
-                    mon_filter = st.multiselect(
-                        "Moneda", df_ons_ci["monedaCodigo"].unique().tolist(),
-                        default=["D"],
-                        key="rf_on_moneda",
-                    )
-                with col_f2:
-                    min_monto = st.number_input(
-                        "Monto mínimo (USD / ARS)", value=0.0, step=1000.0, key="rf_on_monto"
-                    )
-
-                df_f = df_ons_ci[df_ons_ci["monedaCodigo"].isin(mon_filter)] if mon_filter else df_ons_ci
-                if min_monto > 0:
-                    df_f = df_f[df_f["monto"] >= min_monto]
-
-                if df_f.empty:
-                    st.warning("Sin datos con los filtros seleccionados.")
+                if df_ons_ci.empty:
+                    st.info("Sin ONs con operaciones en CI.")
                 else:
-                    cols_on = ["ticker_base", "monedaCodigo", "precio_norm", "precio_ayer",
-                               "variacion", "cantidad", "monto"]
-                    cols_on_ex = [c for c in cols_on if c in df_f.columns]
-                    df_on_disp = df_f[cols_on_ex].rename(columns={
-                        "ticker_base": "Ticker",
-                        "monedaCodigo": "Moneda",
-                        "precio_norm": "Precio",
-                        "precio_ayer": "Cierre Ayer",
-                        "variacion": "Var. %",
-                        "cantidad": "Cantidad (VN)",
-                        "monto": "Monto",
-                    }).sort_values("Monto", ascending=False)
-
-                    st.dataframe(
-                        df_on_disp.style.applymap(_color_var, subset=["Var. %"])
-                                  .format({"Precio": "{:.4f}", "Var. %": "{:.2f}%"}),
-                        use_container_width=True,
-                        height=420,
-                    )
-                    st.caption(f"Fuente: MAE Boletín {fetch_date} · {len(df_f)} ONs · Segmento 5")
-
-                    # Buscar TPCO (Tecpetrol) si está
-                    tpco_row = df_f[df_f["ticker_base"].str.upper().str.contains("TPCO|TPC", na=False)]
-                    if not tpco_row.empty:
-                        st.success(f"✅ TPCO encontrado en MAE: precio {tpco_row.iloc[0]['precio_norm']:.4f}")
-
-                    # Gráfico: distribución de precios ONs USD
-                    df_usd = df_f[df_f["monedaCodigo"] == "D"].copy()
-                    if len(df_usd) > 3:
-                        fig_hist = go.Figure(go.Histogram(
-                            x=df_usd["precio_norm"],
-                            nbinsx=20,
-                            marker_color="#636EFA",
-                            opacity=0.75,
-                        ))
-                        fig_hist.update_layout(
-                            title="Distribución de precios — ONs USD",
-                            xaxis_title="Precio (% VN)",
-                            yaxis_title="Cantidad de ONs",
-                            height=320,
-                            template="plotly_white",
-                        )
-                        st.plotly_chart(fig_hist, use_container_width=True)
+                    cols_disp = ["ticker_base","precio_cierre","precio_promedio","nominal_operado","cantidad_operaciones"]
+                    cols_disp = [c for c in cols_disp if c in df_ons_ci.columns]
+                    df_ons_disp = df_ons_ci[cols_disp].rename(columns={
+                        "ticker_base":"Ticker","precio_cierre":"Precio cierre",
+                        "precio_promedio":"P. promedio","nominal_operado":"Vol. nominal",
+                        "cantidad_operaciones":"Operaciones",
+                    }).sort_values("Vol. nominal", ascending=False)
+                    st.dataframe(df_ons_disp, use_container_width=True, hide_index=True, height=450)
+                    st.caption(f"Boletín MAE · {fetch_date} · {len(df_ons_ci)} ONs con operaciones en CI")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # RF TAB 4 — MI CARTERA RF
+    # RF TAB 4 — CARTERA
     # ══════════════════════════════════════════════════════════════════════════
     with rf_tab4:
-        st.markdown("#### Cartera de Renta Fija")
-        st.caption("Registrá tu posición en bonos y ONs para tracking de P&L y analytics.")
+        st.markdown('<div class="rf-section-header">Mi Cartera RF</div>', unsafe_allow_html=True)
 
-        # Inicializar cartera RF en session state
-        if "cartera_rf" not in st.session_state:
-            st.session_state["cartera_rf"] = []
+        CARTERA_RF_KEY = "cartera_rf_v2"
+        if CARTERA_RF_KEY not in st.session_state:
+            st.session_state[CARTERA_RF_KEY] = []
 
-        # ── Agregar posición ──────────────────────────────────────────────────
-        with st.expander("➕ Agregar posición", expanded=len(st.session_state["cartera_rf"]) == 0):
-            ca1, ca2, ca3, ca4, ca5 = st.columns(5)
+        with st.expander("➕ Agregar posición", expanded=False):
+            ca1, ca2, ca3, ca4 = st.columns(4)
             with ca1:
                 bond_options = list(BONDS_DB.keys()) + ["OTRO"]
-                pos_ticker = st.selectbox("Instrumento", bond_options, key="rf_pos_ticker")
+                tk_new = st.selectbox("Ticker", bond_options, key="rf_tk_new")
             with ca2:
-                pos_vn = st.number_input("VN ($)", min_value=100.0, value=10000.0, step=100.0, key="rf_pos_vn")
+                vn_new = st.number_input("VN nominal", min_value=1, value=1000, step=100, key="rf_vn_new")
             with ca3:
-                pos_precio_compra = st.number_input("Precio compra (% VN)", min_value=0.1, value=65.0, step=0.01, key="rf_pos_pc")
+                pc_new = st.number_input("Precio compra (% VN)", min_value=0.01, max_value=300.0,
+                                          value=63.0, step=0.01, format="%.2f", key="rf_pc_new")
             with ca4:
-                pos_fecha = st.date_input("Fecha compra", key="rf_pos_fecha")
-            with ca5:
-                pos_moneda = st.selectbox("Moneda", ["USD", "ARS"], key="rf_pos_moneda")
+                fecha_compra = st.date_input("Fecha compra", value=date.today(), key="rf_fc_new")
 
-            if st.button("Agregar posición", key="rf_add_pos"):
-                st.session_state["cartera_rf"].append({
-                    "ticker": pos_ticker,
-                    "vn": pos_vn,
-                    "precio_compra": pos_precio_compra,
-                    "fecha_compra": str(pos_fecha),
-                    "moneda": pos_moneda,
-                    "costo_total": pos_vn * pos_precio_compra / 100,
+            if st.button("Agregar", key="rf_add_pos"):
+                st.session_state[CARTERA_RF_KEY].append({
+                    "ticker": tk_new, "vn": vn_new,
+                    "precio_compra": pc_new, "fecha_compra": str(fecha_compra),
                 })
-                st.success(f"✅ {pos_ticker} agregado — VN {pos_vn:,.0f} a {pos_precio_compra:.2f}%")
                 st.rerun()
 
-        # ── Tabla de posiciones ───────────────────────────────────────────────
-        cartera = st.session_state["cartera_rf"]
-        if not cartera:
-            st.info("Sin posiciones registradas. Usá el panel de arriba para agregar.")
+        posiciones = st.session_state[CARTERA_RF_KEY]
+        if not posiciones:
+            st.info("Sin posiciones. Usá el panel de arriba para agregar.")
         else:
-            rows = []
-            for i, pos in enumerate(cartera):
+            df_live_c = d912_live_bonds()
+            cartera_rows = []
+            for i, pos in enumerate(posiciones):
                 tk = pos["ticker"]
-                b_data = BONDS_DB.get(tk, {})
-                costo = pos["costo_total"]
+                vn = pos["vn"]
+                pc = pos["precio_compra"]
 
-                # Precio actual: intentar desde MAE si disponible
-                precio_actual = None
-                if has_mae and b_data:
-                    fetch_d = (datetime.today() - timedelta(days=1))
-                    if fetch_d.weekday() >= 5:
-                        fetch_d -= timedelta(days=fetch_d.weekday() - 4)
-                    boletin_c = mae_boletin(fetch_d.strftime("%Y-%m-%d"))
-                    for seg_id in [MAE_SEG_SOBERANOS_MAE, MAE_SEG_SOBERANOS_PPT, MAE_SEG_ONS]:
-                        if seg_id not in boletin_c:
-                            continue
-                        df_s = boletin_c[seg_id]
-                        fila = df_s[
-                            (df_s["ticker_base"].str.upper() == tk.upper()) &
-                            (df_s["plazo"].astype(str) == "000") &
-                            (df_s["precio_cierre"] > 0)
-                        ]
-                        if not fila.empty:
-                            raw = float(fila.iloc[0]["precio_cierre"])
-                            if seg_id == MAE_SEG_SOBERANOS_PPT and raw < 5:
-                                precio_actual = raw * 100
-                            else:
-                                precio_actual = raw
-                            break
+                p_actual = None
+                if not df_live_c.empty:
+                    for sym in [tk+"D", tk]:
+                        row_c = df_live_c[df_live_c["symbol"].str.upper() == sym.upper()]
+                        if not row_c.empty:
+                            raw = float(row_c.iloc[0].get("c",0) or 0)
+                            if raw <= 0: continue
+                            if raw < 5: raw *= 100
+                            if raw <= 200:
+                                p_actual = raw
+                                break
 
-                precio_actual = precio_actual or pos["precio_compra"]
-                cc = _cupon_corrido(tk, datetime.today().date()) if tk in BONDS_DB else 0.0
-                ps_actual = precio_actual + cc
-                valor_actual = pos["vn"] * ps_actual / 100
-                pnl_abs = valor_actual - costo
-                pnl_pct = pnl_abs / costo * 100 if costo > 0 else 0
+                cc_val = _cupon_corrido(tk, datetime.today().date()) if tk in BONDS_DB else 0.0
+                ps_actual = (p_actual + cc_val) if p_actual else None
+                ytm_actual = _ytm(tk, ps_actual, datetime.today().date()) if (ps_actual and tk in BONDS_DB) else None
+                dur = _duration_macaulay(tk, ps_actual, datetime.today().date()) if (ps_actual and tk in BONDS_DB) else None
 
-                ytm_actual = _ytm(tk, ps_actual, datetime.today().date()) if tk in BONDS_DB else None
-                dur = _duration_macaulay(tk, ps_actual, datetime.today().date()) if tk in BONDS_DB else None
+                costo = vn * pc / 100
+                val_actual = vn * p_actual / 100 if p_actual else None
+                pnl = (val_actual - costo) if val_actual else None
+                pnl_pct = (pnl / costo * 100) if (pnl and costo) else None
 
-                rows.append({
-                    "Ticker": tk,
-                    "VN": pos["vn"],
-                    "P. Compra": pos["precio_compra"],
-                    "P. Actual": round(precio_actual, 2),
-                    "CC": round(cc, 4),
-                    "Costo Total": round(costo, 2),
-                    "Valor Actual": round(valor_actual, 2),
-                    "P&L ($)": round(pnl_abs, 2),
-                    "P&L (%)": round(pnl_pct, 2),
-                    "YTM (%)": round(ytm_actual * 100, 2) if ytm_actual else None,
-                    "Duration": round(dur, 2) if dur else None,
-                    "Moneda": pos["moneda"],
-                    "Origen precio": "MAE" if precio_actual != pos["precio_compra"] else "Manual",
+                idx_col = f"_idx_{i}"
+                cartera_rows.append({
+                    idx_col: i,
+                    "Ticker": tk, "VN": vn,
+                    "P. Compra": pc,
+                    "P. Actual": round(p_actual,2) if p_actual else None,
+                    "CC": round(cc_val,4),
+                    "Costo Total": round(costo,2),
+                    "Valor Actual": round(val_actual,2) if val_actual else None,
+                    "P&L ($)": round(pnl,2) if pnl else None,
+                    "P&L (%)": round(pnl_pct,2) if pnl_pct else None,
+                    "TIR": f"{ytm_actual*100:.3f}%" if ytm_actual else "—",
+                    "Duration": f"{dur:.2f}" if dur else "—",
                 })
-                rows[-1]["_idx"] = i
 
-            df_cartera = pd.DataFrame(rows)
-            idx_col = "_idx"
+            if cartera_rows:
+                idx_col = [c for c in cartera_rows[0] if c.startswith("_idx_")][0]
+                df_cartera = pd.DataFrame(cartera_rows)
 
-            def _color_pnl(val):
-                if pd.isna(val): return ""
-                return "color: #00cc88" if val > 0 else ("color: #ff4b4b" if val < 0 else "")
+                def _color_pnl(val):
+                    if pd.isna(val): return ""
+                    return "color: #3fb950" if val > 0 else ("color: #f85149" if val < 0 else "")
 
-            st.dataframe(
-                df_cartera.drop(columns=[idx_col]).style
-                    .applymap(_color_pnl, subset=["P&L ($)", "P&L (%)"])
-                    .format({
-                        "VN": "{:,.0f}",
-                        "P. Compra": "{:.2f}",
-                        "P. Actual": "{:.2f}",
-                        "CC": "{:.4f}",
-                        "Costo Total": "{:,.2f}",
-                        "Valor Actual": "{:,.2f}",
-                        "P&L ($)": "{:,.2f}",
-                        "P&L (%)": "{:.2f}%",
-                    }),
-                use_container_width=True,
-                height=300,
-            )
+                st.dataframe(
+                    df_cartera.drop(columns=[idx_col]).style
+                        .applymap(_color_pnl, subset=["P&L ($)", "P&L (%)"])
+                        .format({
+                            "VN": "{:,.0f}", "P. Compra": "{:.2f}", "P. Actual": "{:.2f}",
+                            "CC": "{:.4f}", "Costo Total": "{:,.2f}",
+                            "Valor Actual": "{:,.2f}", "P&L ($)": "{:,.2f}", "P&L (%)": "{:.2f}%",
+                        }, na_rep="—"),
+                    use_container_width=True, height=300,
+                )
 
-            # Resumen cartera
-            total_costo  = df_cartera["Costo Total"].sum()
-            total_valor  = df_cartera["Valor Actual"].sum()
-            total_pnl    = total_valor - total_costo
-            total_pnl_pct = total_pnl / total_costo * 100 if total_costo > 0 else 0
-            dur_pond = (
-                (df_cartera["Duration"] * df_cartera["Valor Actual"]).sum() /
-                df_cartera["Valor Actual"].sum()
-            ) if df_cartera["Duration"].notna().any() else None
-
-            st.divider()
-            r1, r2, r3, r4 = st.columns(4)
-            r1.metric("Costo total",     f"${total_costo:,.2f}")
-            r2.metric("Valor actual",    f"${total_valor:,.2f}", f"{total_pnl_pct:+.2f}%")
-            r3.metric("P&L total",       f"${total_pnl:+,.2f}")
-            r4.metric("Duration pond.",  f"{dur_pond:.2f} años" if dur_pond else "N/D")
-
-            # Eliminar posición
-            st.divider()
-            st.markdown("**Eliminar posición**")
-            del_idx = st.selectbox(
-                "Seleccionar posición a eliminar",
-                options=list(range(len(cartera))),
-                format_func=lambda i: f"{cartera[i]['ticker']} — VN {cartera[i]['vn']:,.0f}",
-                key="rf_del_sel",
-            )
-            if st.button("🗑️ Eliminar posición seleccionada", key="rf_del_btn"):
-                st.session_state["cartera_rf"].pop(del_idx)
-                st.success("Posición eliminada.")
-                st.rerun()
+                to_del = st.number_input("N° fila a eliminar (0-based)", min_value=0,
+                                          max_value=len(posiciones)-1, value=0, step=1, key="rf_del_idx")
+                if st.button("🗑️ Eliminar posición", key="rf_del_btn"):
+                    st.session_state[CARTERA_RF_KEY].pop(int(to_del))
+                    st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════════
     # RF TAB 5 — CURVA & ESCENARIOS
     # ══════════════════════════════════════════════════════════════════════════
     with rf_tab5:
-        st.markdown("#### Curva de TIRs, Spreads históricos y Escenarios de shock")
+        st.markdown('<div class="rf-section-header">Curva de TIRs & Escenarios de shock</div>', unsafe_allow_html=True)
 
         hoy_t5 = datetime.today().date()
         df_live_t5 = d912_live_bonds()
         soberanos_t5 = {k: v for k, v in BONDS_DB.items() if v["tipo"] == "Soberano"}
 
-        # ── Recolectar precios actuales D ──────────────────────────────────
         precios_actuales = {}
         if not df_live_t5.empty:
             for tk in soberanos_t5:
@@ -2508,12 +2454,10 @@ with tab6:
                             precios_actuales[tk] = raw
                             break
 
-        # ── Calcular métricas actuales para todos ─────────────────────────
         metricas = {}
         for tk, bv in soberanos_t5.items():
             pl = precios_actuales.get(tk)
-            if not pl:
-                continue
+            if not pl: continue
             cc  = _cupon_corrido(tk, hoy_t5)
             ps  = pl + cc
             ytm = _ytm(tk, ps, hoy_t5)
@@ -2531,16 +2475,11 @@ with tab6:
 
         ct5a, ct5b = st.tabs(["📈 Curva & Spreads", "⚡ Escenarios de shock"])
 
-        # ══════════════════════════════════════════════════════════════════
-        # SUB-TAB A: CURVA ACTUAL + SPREAD HISTÓRICO
-        # ══════════════════════════════════════════════════════════════════
         with ct5a:
             if len(metricas) < 2:
-                st.info("Sin suficientes precios desde data912. Intentá en horario de rueda.")
+                st.info("Sin suficientes precios desde data912.")
             else:
-                # Toggle TIR / Paridad
                 eje_y = st.radio("Eje Y", ["TIR (%)", "Paridad"], horizontal=True, key="t5_eje")
-
                 df_m = pd.DataFrame([
                     {"Ticker": tk, "Ley": v["ley"], "Duration": v["duration"],
                      "TIR (%)": round(v["ytm"]*100, 3),
@@ -2551,104 +2490,82 @@ with tab6:
                 ]).dropna(subset=["Duration"])
 
                 y_col = "TIR (%)" if eje_y == "TIR (%)" else "Paridad"
-                gd_df = df_m[df_m["Ley"] == "NY"]
-                al_df = df_m[df_m["Ley"] == "AR"]
+                gd_df = df_m[df_m["Ley"] == "NY"].sort_values("Duration")
+                al_df = df_m[df_m["Ley"] == "AR"].sort_values("Duration")
 
                 fig_c = go.Figure()
-                for df_sub, color, name in [(gd_df, "#636EFA", "Ley NY (GD)"),
-                                             (al_df, "#EF553B", "Ley AR (AL)")]:
+                for df_sub, color, name in [(gd_df, "#58a6ff", "Ley NY (GD)"),
+                                             (al_df, "#f85149", "Ley AR (AL)")]:
                     if df_sub.empty: continue
-                    df_sub = df_sub.sort_values("Duration")
                     fig_c.add_trace(go.Scatter(
                         x=df_sub["Duration"], y=df_sub[y_col],
-                        mode="markers+lines+text",
-                        name=name,
+                        mode="markers+lines+text", name=name,
                         marker=dict(color=color, size=11),
-                        line=dict(width=1.5),
-                        text=df_sub["Ticker"],
-                        textposition="top center",
-                        hovertemplate=(
-                            "<b>%{text}</b><br>"
-                            f"{y_col}: %{{y:.3f}}<br>"
-                            "Duration: %{x:.2f} años<extra></extra>"
-                        ),
+                        line=dict(width=1.5, color=color),
+                        text=df_sub["Ticker"], textposition="top center",
+                        textfont=dict(family="JetBrains Mono", size=10, color=color),
+                        hovertemplate=f"<b>%{{text}}</b><br>{y_col}: %{{y:.3f}}<br>Duration: %{{x:.2f}}y<extra></extra>",
                     ))
-
                 fig_c.update_layout(
-                    title=f"Curva de {'TIRs' if y_col=='TIR (%)' else 'Paridades'} — Soberanos USD",
-                    xaxis_title="Duration Macaulay (años)",
-                    yaxis_title=y_col,
-                    height=420, template="plotly_white",
+                    paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+                    font=dict(color="#8b949e", family="JetBrains Mono, monospace", size=11),
+                    xaxis=dict(title="Duration Macaulay (años)", gridcolor="#21262d", linecolor="#30363d"),
+                    yaxis=dict(title=y_col, gridcolor="#21262d", linecolor="#30363d"),
+                    legend=dict(bgcolor="#161b22", bordercolor="#30363d"),
+                    height=400, margin=dict(l=10, r=10, t=20, b=10),
                 )
                 st.plotly_chart(fig_c, use_container_width=True)
 
-                # Tabla de spreads actuales
-                st.markdown("**Spread GD − AL por vencimiento**")
+                # Tabla spreads
+                st.markdown('<div class="rf-section-header">Spreads GD − AL</div>', unsafe_allow_html=True)
                 spread_rows = []
                 for yr in ["29","30","35","38","41","46"]:
                     gd_tk, al_tk = f"GD{yr}", f"AL{yr}"
                     if gd_tk in metricas and al_tk in metricas:
-                        spread_bps = (metricas[gd_tk]["ytm"] - metricas[al_tk]["ytm"]) * 10000
+                        sp_bps = (metricas[gd_tk]["ytm"] - metricas[al_tk]["ytm"]) * 10000
                         spread_rows.append({
                             "Vcto": f"20{yr}",
                             "TIR GD": f"{metricas[gd_tk]['ytm']*100:.3f}%",
                             "TIR AL": f"{metricas[al_tk]['ytm']*100:.3f}%",
-                            "Spread (bps)": round(spread_bps, 1),
+                            "Spread bps": round(sp_bps, 1),
                             "Par. GD": f"{metricas[gd_tk]['paridad']:.4f}",
                             "Par. AL": f"{metricas[al_tk]['paridad']:.4f}",
-                            "Dif. Paridad": round((metricas[gd_tk]["paridad"] or 0) - (metricas[al_tk]["paridad"] or 0), 4),
+                            "Dif. Par.": round((metricas[gd_tk]["paridad"] or 0)-(metricas[al_tk]["paridad"] or 0), 4),
                         })
-
                 if spread_rows:
                     df_sp = pd.DataFrame(spread_rows)
-                    def _color_spread(val):
+                    def _cs(val):
                         try:
                             v = float(val)
-                            return "color: #00cc88" if v > 0 else "color: #ff4b4b"
+                            return "color: #3fb950" if v > 0 else "color: #f85149"
                         except: return ""
                     st.dataframe(
-                        df_sp.style.applymap(_color_spread, subset=["Spread (bps)", "Dif. Paridad"]),
+                        df_sp.style.applymap(_cs, subset=["Spread bps","Dif. Par."]),
                         use_container_width=True, hide_index=True,
                     )
-                    st.caption("Spread positivo → GD rinde más que AL → arbitraje: long GD / short AL")
+                    st.caption("Spread > 0 → GD rinde más → long GD / short AL")
 
-                st.divider()
+                st.markdown('<hr class="rf-divider">', unsafe_allow_html=True)
+                st.markdown('<div class="rf-section-header">Spread histórico de precios</div>', unsafe_allow_html=True)
 
-                # ── Spread histórico GD-AL (precios data912) ──────────────
-                st.markdown("**Spread histórico de precios GD − AL**")
-                st.caption("Basado en precios de cierre data912. Proxy del spread de ley.")
-
-                col_par, col_per = st.columns([1, 2])
+                col_par, col_per = st.columns([1,2])
                 with col_par:
-                    par_sel = st.selectbox(
-                        "Par",
-                        [f"GD{yr}D / AL{yr}D" for yr in ["29","30","35","38","41","46"]],
-                        index=1,
-                        key="t5_par_hist",
-                    )
+                    par_sel = st.selectbox("Par", [f"GD{yr}D / AL{yr}D" for yr in ["29","30","35","38","41","46"]], index=1, key="t5_par_hist")
                 with col_per:
-                    periodo_hist = st.select_slider(
-                        "Período histórico",
-                        ["3M","6M","1Y","2Y","Todo"],
-                        value="1Y",
-                        key="t5_periodo_hist",
-                    )
+                    periodo_hist = st.select_slider("Período", ["3M","6M","1Y","2Y","Todo"], value="1Y", key="t5_periodo_hist")
 
                 yr_sel = par_sel[2:4]
-                gd_sym = f"GD{yr_sel}D"
-                al_sym = f"AL{yr_sel}D"
-                dias_map = {"3M": 90, "6M": 180, "1Y": 252, "2Y": 504, "Todo": 9999}
-                n_dias = dias_map[periodo_hist]
+                gd_sym, al_sym = f"GD{yr_sel}D", f"AL{yr_sel}D"
+                dias_map2 = {"3M":90,"6M":180,"1Y":252,"2Y":504,"Todo":9999}
+                n_dias = dias_map2[periodo_hist]
 
                 df_gd_h = d912_historical(gd_sym).tail(n_dias)
                 df_al_h = d912_historical(al_sym).tail(n_dias)
 
-                if df_gd_h.empty or df_al_h.empty:
-                    st.warning(f"Sin histórico para {gd_sym} o {al_sym}")
-                else:
+                if not df_gd_h.empty and not df_al_h.empty:
                     df_merge = pd.merge(
-                        df_gd_h[["date","c"]].rename(columns={"c": "gd"}),
-                        df_al_h[["date","c"]].rename(columns={"c": "al"}),
+                        df_gd_h[["date","c"]].rename(columns={"c":"gd"}),
+                        df_al_h[["date","c"]].rename(columns={"c":"al"}),
                         on="date", how="inner"
                     )
                     df_merge["spread"] = df_merge["gd"] - df_merge["al"]
@@ -2659,98 +2576,58 @@ with tab6:
                     spread_now  = df_merge["spread"].iloc[-1]
                     zscore_now  = (spread_now - spread_mean) / spread_std if spread_std > 0 else 0
 
-                    # Métricas resumen
                     ms1, ms2, ms3, ms4 = st.columns(4)
                     ms1.metric("Spread actual", f"{spread_now:.3f}")
                     ms2.metric("Media", f"{spread_mean:.3f}")
-                    ms3.metric("± 1σ", f"{spread_std:.3f}")
-                    ms4.metric("Z-score", f"{zscore_now:.2f}",
-                               delta="caro vs historia" if zscore_now > 1 else ("barato vs historia" if zscore_now < -1 else "en rango"))
+                    ms3.metric("1σ", f"{spread_std:.3f}")
+                    z_label = "↑ caro" if zscore_now > 1 else ("↓ barato" if zscore_now < -1 else "en rango")
+                    ms4.metric("Z-score", f"{zscore_now:.2f}", delta=z_label)
 
-                    # Gráfico spread con bandas
                     fig_sp = go.Figure()
                     fig_sp.add_trace(go.Scatter(
                         x=df_merge["date"], y=df_merge["spread"],
                         mode="lines", name="Spread",
-                        line=dict(color="#636EFA", width=1.5),
+                        line=dict(color="#58a6ff", width=1.5),
                     ))
-                    fig_sp.add_hline(y=spread_mean, line_dash="dash", line_color="gray",
-                                      annotation_text="Media", annotation_position="right")
-                    fig_sp.add_hrect(y0=spread_mean - spread_std, y1=spread_mean + spread_std,
-                                      fillcolor="rgba(99,110,250,0.08)", line_width=0,
-                                      annotation_text="±1σ", annotation_position="top left")
-                    fig_sp.add_hrect(y0=spread_mean - 2*spread_std, y1=spread_mean + 2*spread_std,
-                                      fillcolor="rgba(99,110,250,0.04)", line_width=0,
-                                      annotation_text="±2σ", annotation_position="bottom left")
+                    fig_sp.add_hline(y=spread_mean, line_dash="dash", line_color="#8b949e",
+                                      annotation_text="μ", annotation_font=dict(color="#8b949e"))
+                    fig_sp.add_hrect(y0=spread_mean-spread_std, y1=spread_mean+spread_std,
+                                      fillcolor="rgba(88,166,255,0.06)", line_width=0)
+                    fig_sp.add_hrect(y0=spread_mean-2*spread_std, y1=spread_mean+2*spread_std,
+                                      fillcolor="rgba(88,166,255,0.03)", line_width=0)
                     fig_sp.add_scatter(
                         x=[df_merge["date"].iloc[-1]], y=[spread_now],
                         mode="markers", name="Hoy",
-                        marker=dict(color="red", size=10, symbol="circle"),
+                        marker=dict(color="#f85149", size=9, symbol="circle"),
                     )
                     fig_sp.update_layout(
-                        title=f"Spread de precios {gd_sym} − {al_sym}",
-                        yaxis_title="Spread (precio GD − precio AL)",
-                        height=380, template="plotly_white",
-                        hovermode="x unified",
+                        paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+                        font=dict(color="#8b949e", family="JetBrains Mono, monospace", size=11),
+                        xaxis=dict(gridcolor="#21262d", linecolor="#30363d"),
+                        yaxis=dict(title="Spread precio (GD−AL)", gridcolor="#21262d", linecolor="#30363d"),
+                        height=320, hovermode="x unified", margin=dict(l=10, r=10, t=20, b=10),
+                        legend=dict(bgcolor="#161b22", bordercolor="#30363d"),
                     )
                     st.plotly_chart(fig_sp, use_container_width=True)
+                    st.caption(f"Z-score: {zscore_now:.2f} | Ratio GD/AL actual: {df_merge['ratio'].iloc[-1]:.4f} vs μ {df_merge['ratio'].mean():.4f}")
+                else:
+                    st.warning(f"Sin histórico para {gd_sym} o {al_sym}")
 
-                    # Ratio GD/AL
-                    ratio_mean = df_merge["ratio"].mean()
-                    ratio_std  = df_merge["ratio"].std()
-                    ratio_now  = df_merge["ratio"].iloc[-1]
-                    fig_ratio = go.Figure()
-                    fig_ratio.add_trace(go.Scatter(
-                        x=df_merge["date"], y=df_merge["ratio"],
-                        mode="lines", name="Ratio GD/AL",
-                        line=dict(color="#EF553B", width=1.5),
-                    ))
-                    fig_ratio.add_hline(y=ratio_mean, line_dash="dash", line_color="gray",
-                                         annotation_text=f"Media {ratio_mean:.4f}", annotation_position="right")
-                    fig_ratio.add_hrect(y0=ratio_mean-ratio_std, y1=ratio_mean+ratio_std,
-                                         fillcolor="rgba(239,85,59,0.08)", line_width=0)
-                    fig_ratio.add_hrect(y0=ratio_mean-2*ratio_std, y1=ratio_mean+2*ratio_std,
-                                         fillcolor="rgba(239,85,59,0.04)", line_width=0)
-                    fig_ratio.add_scatter(
-                        x=[df_merge["date"].iloc[-1]], y=[ratio_now],
-                        mode="markers", name="Hoy",
-                        marker=dict(color="red", size=10),
-                    )
-                    fig_ratio.update_layout(
-                        title=f"Ratio de precios {gd_sym} / {al_sym}",
-                        yaxis_title="Ratio",
-                        height=320, template="plotly_white",
-                        hovermode="x unified",
-                    )
-                    st.plotly_chart(fig_ratio, use_container_width=True)
-                    st.caption(f"Z-score actual: {zscore_now:.2f} | Ratio actual: {ratio_now:.4f} vs media {ratio_mean:.4f} ± {ratio_std:.4f}")
-
-        # ══════════════════════════════════════════════════════════════════
-        # SUB-TAB B: ESCENARIOS DE SHOCK
-        # ══════════════════════════════════════════════════════════════════
         with ct5b:
-            st.markdown("**Impacto en precio ante cambio en TIR**")
+            st.markdown('<div class="rf-section-header">Impacto en precio ante cambio en TIR</div>', unsafe_allow_html=True)
             st.caption("ΔP ≈ −DurMod × ΔY + ½ × Convexidad × ΔY²")
 
             if not metricas:
                 st.info("Sin precios actuales de data912.")
             else:
-                # Shocks a analizar
                 c_shock1, c_shock2 = st.columns(2)
                 with c_shock1:
-                    shocks_input = st.text_input(
-                        "Shocks en bps (separados por coma)",
-                        value="-200,-100,-50,+50,+100,+200",
-                        key="t5_shocks",
-                    )
+                    shocks_input = st.text_input("Shocks en bps (separados por coma)",
+                                                  value="-200,-100,-50,+50,+100,+200", key="t5_shocks")
                 with c_shock2:
-                    bonos_shock = st.multiselect(
-                        "Bonos a analizar",
-                        list(metricas.keys()),
-                        default=["GD30","AL30","GD35","AL35","GD38","GD41"],
-                        key="t5_bonos_shock",
-                    )
-
+                    bonos_shock = st.multiselect("Bonos", list(metricas.keys()),
+                                                  default=["GD30","AL30","GD35","AL35","GD38","GD41"],
+                                                  key="t5_bonos_shock")
                 try:
                     shocks_bps = [int(s.strip().replace("+","")) for s in shocks_input.split(",")]
                 except:
@@ -2761,84 +2638,199 @@ with tab6:
                     for tk in bonos_shock:
                         if tk not in metricas: continue
                         m = metricas[tk]
-                        row = {"Ticker": tk, "TIR actual": f"{m['ytm']*100:.3f}%",
-                               "Precio actual": f"{m['precio_limpio']:.2f}",
-                               "DurMod": f"{m['dur_mod']:.3f}" if m['dur_mod'] else "N/D",
-                               "Convex.": f"{m['convexity']:.3f}" if m['convexity'] else "N/D"}
+                        row = {"Ticker": tk,
+                               "TIR": f"{m['ytm']*100:.3f}%",
+                               "Precio": f"{m['precio_limpio']:.2f}",
+                               "DurMod": f"{m['dur_mod']:.3f}" if m['dur_mod'] else "N/D"}
                         for bps in shocks_bps:
-                            dy = bps / 10000
+                            dy = bps/10000
                             dm = m["dur_mod"] or 0
                             cv = m["convexity"] or 0
-                            dp_pct = (-dm * dy + 0.5 * cv * dy**2) * 100
-                            new_p  = m["precio_limpio"] * (1 + dp_pct/100)
-                            row[f"{bps:+d}bps"] = f"{dp_pct:+.2f}% ({new_p:.2f})"
+                            dp = (-dm*dy + 0.5*cv*dy**2)*100
+                            new_p = m["precio_limpio"]*(1+dp/100)
+                            row[f"{bps:+d}bps"] = f"{dp:+.2f}%\n({new_p:.2f})"
                         shock_rows.append(row)
 
                     df_shock = pd.DataFrame(shock_rows)
                     st.dataframe(df_shock, use_container_width=True, hide_index=True)
 
-                    # Gráfico de barras por shock para comparar bonos
-                    st.divider()
-                    shock_sel = st.select_slider(
-                        "Shock para visualizar",
-                        options=shocks_bps,
-                        value=shocks_bps[len(shocks_bps)//2],
-                        key="t5_shock_vis",
-                        format_func=lambda x: f"{x:+d} bps",
-                    )
-                    dy_sel = shock_sel / 10000
-                    fig_bar = go.Figure()
-                    for tk in bonos_shock:
-                        if tk not in metricas: continue
-                        m = metricas[tk]
-                        dm = m["dur_mod"] or 0
-                        cv = m["convexity"] or 0
-                        dp = (-dm * dy_sel + 0.5 * cv * dy_sel**2) * 100
-                        fig_bar.add_trace(go.Bar(
-                            name=tk, x=[tk], y=[dp],
-                            marker_color="#00cc88" if dp >= 0 else "#ff4b4b",
-                            text=f"{dp:+.2f}%", textposition="outside",
-                        ))
+                    st.markdown('<hr class="rf-divider">', unsafe_allow_html=True)
+                    shock_sel = st.select_slider("Shock para visualizar", options=shocks_bps,
+                                                  value=shocks_bps[len(shocks_bps)//2],
+                                                  key="t5_shock_vis", format_func=lambda x: f"{x:+d} bps")
+                    dy_sel = shock_sel/10000
+                    tks_bar = [tk for tk in bonos_shock if tk in metricas]
+                    dp_vals = [(-metricas[tk]["dur_mod"]*dy_sel + 0.5*(metricas[tk]["convexity"] or 0)*dy_sel**2)*100
+                                for tk in tks_bar]
+
+                    fig_bar = go.Figure(go.Bar(
+                        x=tks_bar, y=dp_vals,
+                        marker_color=["#3fb950" if v >= 0 else "#f85149" for v in dp_vals],
+                        text=[f"{v:+.2f}%" for v in dp_vals], textposition="outside",
+                        textfont=dict(family="JetBrains Mono", size=11),
+                    ))
                     fig_bar.update_layout(
-                        title=f"Cambio en precio ante shock de {shock_sel:+d} bps",
-                        yaxis_title="ΔP (%)",
-                        height=380, template="plotly_white",
-                        showlegend=False,
+                        paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+                        font=dict(color="#8b949e", family="JetBrains Mono, monospace", size=11),
+                        title=dict(text=f"ΔP ante shock {shock_sel:+d} bps",
+                                   font=dict(color="#e6edf3", family="JetBrains Mono", size=13)),
+                        xaxis=dict(gridcolor="#21262d", linecolor="#30363d"),
+                        yaxis=dict(title="ΔP (%)", gridcolor="#21262d", linecolor="#30363d"),
+                        height=360, showlegend=False, margin=dict(l=10, r=10, t=40, b=10),
                     )
                     st.plotly_chart(fig_bar, use_container_width=True)
 
-                    # Curva de precio vs shock continuo por bono seleccionado
-                    st.divider()
-                    st.markdown("**Perfil de sensibilidad continuo**")
+                    st.markdown('<hr class="rf-divider">', unsafe_allow_html=True)
+                    st.markdown('<div class="rf-section-header">Perfil continuo ±400 bps</div>', unsafe_allow_html=True)
                     bono_perfil = st.selectbox("Bono", bonos_shock, key="t5_bono_perfil")
                     if bono_perfil in metricas:
                         m = metricas[bono_perfil]
                         dm = m["dur_mod"] or 0
                         cv = m["convexity"] or 0
-                        dy_range = np.linspace(-0.04, 0.04, 200)
-                        dp_range = (-dm * dy_range + 0.5 * cv * dy_range**2) * 100
-                        new_p_range = m["precio_limpio"] * (1 + dp_range/100)
+                        dy_r = np.linspace(-0.04, 0.04, 200)
+                        dp_r = (-dm*dy_r + 0.5*cv*dy_r**2)*100
+                        new_p_r = m["precio_limpio"]*(1+dp_r/100)
+
                         fig_perf = go.Figure()
                         fig_perf.add_trace(go.Scatter(
-                            x=dy_range*10000, y=new_p_range,
-                            mode="lines", name="Precio estimado",
-                            line=dict(color="#636EFA", width=2),
-                            fill="tozeroy", fillcolor="rgba(99,110,250,0.06)",
+                            x=dy_r*10000, y=new_p_r, mode="lines",
+                            line=dict(color="#58a6ff", width=2), name="Precio estimado",
+                            fill="tozeroy", fillcolor="rgba(88,166,255,0.05)",
                         ))
-                        fig_perf.add_vline(x=0, line_dash="dash", line_color="gray")
-                        fig_perf.add_hline(y=m["precio_limpio"], line_dash="dot",
-                                            line_color="orange",
-                                            annotation_text=f"Precio actual {m['precio_limpio']:.2f}",
-                                            annotation_position="right")
+                        fig_perf.add_vline(x=0, line_dash="dash", line_color="#30363d")
+                        fig_perf.add_hline(y=m["precio_limpio"], line_dash="dot", line_color="#e3b341",
+                                            annotation_text=f"{m['precio_limpio']:.2f}",
+                                            annotation_font=dict(color="#e3b341", family="JetBrains Mono"))
                         fig_perf.update_layout(
-                            title=f"{bono_perfil} — Precio estimado vs shock (±400 bps)",
-                            xaxis_title="Shock (bps)",
-                            yaxis_title="Precio estimado (% VN)",
-                            height=360, template="plotly_white",
+                            paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+                            font=dict(color="#8b949e", family="JetBrains Mono, monospace", size=11),
+                            xaxis=dict(title="Shock (bps)", gridcolor="#21262d", linecolor="#30363d"),
+                            yaxis=dict(title="Precio estimado", gridcolor="#21262d", linecolor="#30363d"),
+                            height=340, margin=dict(l=10, r=10, t=20, b=10),
                         )
                         st.plotly_chart(fig_perf, use_container_width=True)
-                        st.caption(
-                            f"DurMod: {dm:.4f} | Convexidad: {cv:.4f} | "
-                            f"Precio actual: {m['precio_limpio']:.2f} | TIR: {m['ytm']*100:.3f}%"
-                        )
+                        st.caption(f"DurMod: {dm:.4f} · Convex: {cv:.4f} · TIR: {m['ytm']*100:.3f}%")
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # RF TAB 6 — CALENDARIO DE PAGOS
+    # ══════════════════════════════════════════════════════════════════════════
+    with rf_tab6:
+        st.markdown('<div class="rf-section-header">Próximos pagos — Soberanos USD (canje 2020)</div>', unsafe_allow_html=True)
+
+        hoy_cal = datetime.today().date()
+
+        cal_rows = []
+        for tk, bv in BONDS_DB.items():
+            if bv["tipo"] != "Soberano":
+                continue
+            for cd, cup, am in bv["cash_flows"]:
+                if cd < hoy_cal:
+                    continue
+                dias = (cd - hoy_cal).days
+                tipo = ("C+A" if am > 0 and cup > 0 else
+                        "A"   if am > 0 else "C")
+                cal_rows.append({
+                    "Fecha":    cd,
+                    "Días":     dias,
+                    "Ticker":   tk,
+                    "Ley":      bv["ley"],
+                    "Tipo":     tipo,
+                    "Cupón (% VN)":  round(cup, 5),
+                    "Amort (% VN)":  round(am, 4) if am > 0 else "",
+                    "Total (% VN)":  round(cup + am, 5),
+                })
+
+        if cal_rows:
+            df_cal = pd.DataFrame(cal_rows).sort_values(["Fecha","Ticker"])
+
+            # Filtros
+            fc1, fc2, fc3 = st.columns(3)
+            with fc1:
+                ventana = st.select_slider("Ventana", ["30d","90d","180d","1Y","2Y","Todo"],
+                                            value="1Y", key="cal_ventana")
+            with fc2:
+                tickers_cal = st.multiselect("Bonos", sorted(df_cal["Ticker"].unique()),
+                                              default=[], key="cal_tickers",
+                                              placeholder="Todos")
+            with fc3:
+                tipo_cal = st.multiselect("Tipo pago", ["C","A","C+A"],
+                                           default=[], key="cal_tipo",
+                                           placeholder="Todos")
+
+            dias_ventana = {"30d":30,"90d":90,"180d":180,"1Y":365,"2Y":730,"Todo":99999}
+            max_dias = dias_ventana[ventana]
+            df_cal_f = df_cal[df_cal["Días"] <= max_dias].copy()
+            if tickers_cal:
+                df_cal_f = df_cal_f[df_cal_f["Ticker"].isin(tickers_cal)]
+            if tipo_cal:
+                df_cal_f = df_cal_f[df_cal_f["Tipo"].isin(tipo_cal)]
+
+            # Métricas
+            proximos_30 = df_cal_f[df_cal_f["Días"] <= 30]
+            cm1, cm2, cm3 = st.columns(3)
+            cm1.metric("Pagos en ventana", len(df_cal_f))
+            cm2.metric("Próximos 30 días", len(proximos_30))
+            if not proximos_30.empty:
+                prox = proximos_30.iloc[0]
+                cm3.metric("Próximo pago", f"{prox['Ticker']} — {prox['Fecha'].strftime('%d/%m/%Y')}",
+                            delta=f"{prox['Días']} días")
+
+            st.markdown('<hr class="rf-divider">', unsafe_allow_html=True)
+
+            # Tabla principal
+            df_cal_disp = df_cal_f.copy()
+            df_cal_disp["Fecha"] = df_cal_disp["Fecha"].apply(lambda x: x.strftime("%Y-%m-%d"))
+
+            def _color_dias(val):
+                try:
+                    v = int(val)
+                    if v <= 30:  return "color: #f85149; font-weight: bold"
+                    if v <= 90:  return "color: #e3b341"
+                    return "color: #8b949e"
+                except: return ""
+
+            def _color_tipo(val):
+                if val == "C+A": return "color: #3fb950; font-weight:bold"
+                if val == "A":   return "color: #e3b341"
+                return "color: #8b949e"
+
+            styled_cal = (df_cal_disp.style
+                .applymap(_color_dias, subset=["Días"])
+                .applymap(_color_tipo, subset=["Tipo"])
+                .format({"Cupón (% VN)": "{:.5f}", "Total (% VN)": "{:.5f}"}, na_rep="")
+            )
+            st.dataframe(styled_cal, use_container_width=True, hide_index=True,
+                         height=min(600, 40 + len(df_cal_f)*36))
+
+            # Timeline visual — próximos 90 días
+            df_tl = df_cal_f[df_cal_f["Días"] <= 90].copy()
+            if not df_tl.empty:
+                st.markdown('<hr class="rf-divider">', unsafe_allow_html=True)
+                st.markdown('<div class="rf-section-header">Timeline próximos 90 días</div>', unsafe_allow_html=True)
+                fig_tl = go.Figure()
+                color_map = {"C": "#8b949e", "A": "#e3b341", "C+A": "#3fb950"}
+                for tipo_t in ["C","A","C+A"]:
+                    df_sub = df_tl[df_tl["Tipo"] == tipo_t]
+                    if df_sub.empty: continue
+                    fig_tl.add_trace(go.Scatter(
+                        x=df_sub["Fecha"].apply(lambda x: x.strftime("%Y-%m-%d") if not isinstance(x, str) else x),
+                        y=df_sub["Total (% VN)"],
+                        mode="markers+text",
+                        name=tipo_t,
+                        marker=dict(color=color_map[tipo_t], size=12,
+                                    line=dict(color="#0d1117", width=2)),
+                        text=df_sub["Ticker"],
+                        textposition="top center",
+                        textfont=dict(family="JetBrains Mono", size=10),
+                        hovertemplate="<b>%{text}</b><br>Fecha: %{x}<br>Total: %{y:.4f}%<extra></extra>",
+                    ))
+                fig_tl.update_layout(
+                    paper_bgcolor="#0d1117", plot_bgcolor="#0d1117",
+                    font=dict(color="#8b949e", family="JetBrains Mono, monospace", size=11),
+                    xaxis=dict(title="Fecha", gridcolor="#21262d", linecolor="#30363d"),
+                    yaxis=dict(title="Total (% VN)", gridcolor="#21262d", linecolor="#30363d"),
+                    legend=dict(bgcolor="#161b22", bordercolor="#30363d"),
+                    height=320, margin=dict(l=10, r=10, t=20, b=10),
+                )
+                st.plotly_chart(fig_tl, use_container_width=True)
+                st.caption("Verde = C+A (cupón + amortización) · Amarillo = A · Gris = C")
