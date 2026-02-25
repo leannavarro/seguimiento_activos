@@ -1847,8 +1847,8 @@ with tab6:
 
     has_mae = bool(_mae_key())
 
-    rf_tab1, rf_tab2, rf_tab3, rf_tab4 = st.tabs([
-        "📡 Mercado Hoy", "📊 Análisis de Bonos", "📈 ONs Corporativas", "💼 Mi Cartera RF"
+    rf_tab1, rf_tab2, rf_tab3, rf_tab4, rf_tab5 = st.tabs([
+        "📡 Mercado Hoy", "📊 Análisis de Bonos", "📈 ONs Corporativas", "💼 Mi Cartera RF", "📐 Curva & Escenarios"
     ])
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -2483,3 +2483,362 @@ with tab6:
                 st.session_state["cartera_rf"].pop(del_idx)
                 st.success("Posición eliminada.")
                 st.rerun()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RF TAB 5 — CURVA & ESCENARIOS
+    # ══════════════════════════════════════════════════════════════════════════
+    with rf_tab5:
+        st.markdown("#### Curva de TIRs, Spreads históricos y Escenarios de shock")
+
+        hoy_t5 = datetime.today().date()
+        df_live_t5 = d912_live_bonds()
+        soberanos_t5 = {k: v for k, v in BONDS_DB.items() if v["tipo"] == "Soberano"}
+
+        # ── Recolectar precios actuales D ──────────────────────────────────
+        precios_actuales = {}
+        if not df_live_t5.empty:
+            for tk in soberanos_t5:
+                for sym in [tk + "D", tk]:
+                    row = df_live_t5[df_live_t5["symbol"].str.upper() == sym.upper()]
+                    if not row.empty:
+                        raw = float(row.iloc[0].get("c", 0) or 0)
+                        if raw <= 0: continue
+                        if raw < 5: raw *= 100
+                        if raw <= 200:
+                            precios_actuales[tk] = raw
+                            break
+
+        # ── Calcular métricas actuales para todos ─────────────────────────
+        metricas = {}
+        for tk, bv in soberanos_t5.items():
+            pl = precios_actuales.get(tk)
+            if not pl:
+                continue
+            cc  = _cupon_corrido(tk, hoy_t5)
+            ps  = pl + cc
+            ytm = _ytm(tk, ps, hoy_t5)
+            dm  = _duration_macaulay(tk, ps, hoy_t5)
+            dmod = (dm / (1 + ytm)) if (dm and ytm) else None
+            conv = _convexity(tk, ps, hoy_t5)
+            par  = _paridad(tk, ps, hoy_t5)
+            if ytm and dm:
+                metricas[tk] = {
+                    "ley": bv["ley"], "vto": bv["vencimiento"],
+                    "precio_limpio": pl, "precio_sucio": ps,
+                    "ytm": ytm, "duration": dm, "dur_mod": dmod,
+                    "convexity": conv, "paridad": par,
+                }
+
+        ct5a, ct5b = st.tabs(["📈 Curva & Spreads", "⚡ Escenarios de shock"])
+
+        # ══════════════════════════════════════════════════════════════════
+        # SUB-TAB A: CURVA ACTUAL + SPREAD HISTÓRICO
+        # ══════════════════════════════════════════════════════════════════
+        with ct5a:
+            if len(metricas) < 2:
+                st.info("Sin suficientes precios desde data912. Intentá en horario de rueda.")
+            else:
+                # Toggle TIR / Paridad
+                eje_y = st.radio("Eje Y", ["TIR (%)", "Paridad"], horizontal=True, key="t5_eje")
+
+                df_m = pd.DataFrame([
+                    {"Ticker": tk, "Ley": v["ley"], "Duration": v["duration"],
+                     "TIR (%)": round(v["ytm"]*100, 3),
+                     "Paridad": round(v["paridad"], 4) if v["paridad"] else None,
+                     "Precio": round(v["precio_limpio"], 2),
+                     "Vcto": str(v["vto"])}
+                    for tk, v in metricas.items()
+                ]).dropna(subset=["Duration"])
+
+                y_col = "TIR (%)" if eje_y == "TIR (%)" else "Paridad"
+                gd_df = df_m[df_m["Ley"] == "NY"]
+                al_df = df_m[df_m["Ley"] == "AR"]
+
+                fig_c = go.Figure()
+                for df_sub, color, name in [(gd_df, "#636EFA", "Ley NY (GD)"),
+                                             (al_df, "#EF553B", "Ley AR (AL)")]:
+                    if df_sub.empty: continue
+                    df_sub = df_sub.sort_values("Duration")
+                    fig_c.add_trace(go.Scatter(
+                        x=df_sub["Duration"], y=df_sub[y_col],
+                        mode="markers+lines+text",
+                        name=name,
+                        marker=dict(color=color, size=11),
+                        line=dict(width=1.5),
+                        text=df_sub["Ticker"],
+                        textposition="top center",
+                        hovertemplate=(
+                            "<b>%{text}</b><br>"
+                            f"{y_col}: %{{y:.3f}}<br>"
+                            "Duration: %{x:.2f} años<extra></extra>"
+                        ),
+                    ))
+
+                fig_c.update_layout(
+                    title=f"Curva de {'TIRs' if y_col=='TIR (%)' else 'Paridades'} — Soberanos USD",
+                    xaxis_title="Duration Macaulay (años)",
+                    yaxis_title=y_col,
+                    height=420, template="plotly_white",
+                )
+                st.plotly_chart(fig_c, use_container_width=True)
+
+                # Tabla de spreads actuales
+                st.markdown("**Spread GD − AL por vencimiento**")
+                spread_rows = []
+                for yr in ["29","30","35","38","41","46"]:
+                    gd_tk, al_tk = f"GD{yr}", f"AL{yr}"
+                    if gd_tk in metricas and al_tk in metricas:
+                        spread_bps = (metricas[gd_tk]["ytm"] - metricas[al_tk]["ytm"]) * 10000
+                        spread_rows.append({
+                            "Vcto": f"20{yr}",
+                            "TIR GD": f"{metricas[gd_tk]['ytm']*100:.3f}%",
+                            "TIR AL": f"{metricas[al_tk]['ytm']*100:.3f}%",
+                            "Spread (bps)": round(spread_bps, 1),
+                            "Par. GD": f"{metricas[gd_tk]['paridad']:.4f}",
+                            "Par. AL": f"{metricas[al_tk]['paridad']:.4f}",
+                            "Dif. Paridad": round((metricas[gd_tk]["paridad"] or 0) - (metricas[al_tk]["paridad"] or 0), 4),
+                        })
+
+                if spread_rows:
+                    df_sp = pd.DataFrame(spread_rows)
+                    def _color_spread(val):
+                        try:
+                            v = float(val)
+                            return "color: #00cc88" if v > 0 else "color: #ff4b4b"
+                        except: return ""
+                    st.dataframe(
+                        df_sp.style.applymap(_color_spread, subset=["Spread (bps)", "Dif. Paridad"]),
+                        use_container_width=True, hide_index=True,
+                    )
+                    st.caption("Spread positivo → GD rinde más que AL → arbitraje: long GD / short AL")
+
+                st.divider()
+
+                # ── Spread histórico GD-AL (precios data912) ──────────────
+                st.markdown("**Spread histórico de precios GD − AL**")
+                st.caption("Basado en precios de cierre data912. Proxy del spread de ley.")
+
+                col_par, col_per = st.columns([1, 2])
+                with col_par:
+                    par_sel = st.selectbox(
+                        "Par",
+                        [f"GD{yr}D / AL{yr}D" for yr in ["29","30","35","38","41","46"]],
+                        index=1,
+                        key="t5_par_hist",
+                    )
+                with col_per:
+                    periodo_hist = st.select_slider(
+                        "Período histórico",
+                        ["3M","6M","1Y","2Y","Todo"],
+                        value="1Y",
+                        key="t5_periodo_hist",
+                    )
+
+                yr_sel = par_sel[2:4]
+                gd_sym = f"GD{yr_sel}D"
+                al_sym = f"AL{yr_sel}D"
+                dias_map = {"3M": 90, "6M": 180, "1Y": 252, "2Y": 504, "Todo": 9999}
+                n_dias = dias_map[periodo_hist]
+
+                df_gd_h = d912_historical(gd_sym).tail(n_dias)
+                df_al_h = d912_historical(al_sym).tail(n_dias)
+
+                if df_gd_h.empty or df_al_h.empty:
+                    st.warning(f"Sin histórico para {gd_sym} o {al_sym}")
+                else:
+                    df_merge = pd.merge(
+                        df_gd_h[["date","c"]].rename(columns={"c": "gd"}),
+                        df_al_h[["date","c"]].rename(columns={"c": "al"}),
+                        on="date", how="inner"
+                    )
+                    df_merge["spread"] = df_merge["gd"] - df_merge["al"]
+                    df_merge["ratio"]  = df_merge["gd"] / df_merge["al"]
+
+                    spread_mean = df_merge["spread"].mean()
+                    spread_std  = df_merge["spread"].std()
+                    spread_now  = df_merge["spread"].iloc[-1]
+                    zscore_now  = (spread_now - spread_mean) / spread_std if spread_std > 0 else 0
+
+                    # Métricas resumen
+                    ms1, ms2, ms3, ms4 = st.columns(4)
+                    ms1.metric("Spread actual", f"{spread_now:.3f}")
+                    ms2.metric("Media", f"{spread_mean:.3f}")
+                    ms3.metric("± 1σ", f"{spread_std:.3f}")
+                    ms4.metric("Z-score", f"{zscore_now:.2f}",
+                               delta="caro vs historia" if zscore_now > 1 else ("barato vs historia" if zscore_now < -1 else "en rango"))
+
+                    # Gráfico spread con bandas
+                    fig_sp = go.Figure()
+                    fig_sp.add_trace(go.Scatter(
+                        x=df_merge["date"], y=df_merge["spread"],
+                        mode="lines", name="Spread",
+                        line=dict(color="#636EFA", width=1.5),
+                    ))
+                    fig_sp.add_hline(y=spread_mean, line_dash="dash", line_color="gray",
+                                      annotation_text="Media", annotation_position="right")
+                    fig_sp.add_hrect(y0=spread_mean - spread_std, y1=spread_mean + spread_std,
+                                      fillcolor="rgba(99,110,250,0.08)", line_width=0,
+                                      annotation_text="±1σ", annotation_position="top left")
+                    fig_sp.add_hrect(y0=spread_mean - 2*spread_std, y1=spread_mean + 2*spread_std,
+                                      fillcolor="rgba(99,110,250,0.04)", line_width=0,
+                                      annotation_text="±2σ", annotation_position="bottom left")
+                    fig_sp.add_scatter(
+                        x=[df_merge["date"].iloc[-1]], y=[spread_now],
+                        mode="markers", name="Hoy",
+                        marker=dict(color="red", size=10, symbol="circle"),
+                    )
+                    fig_sp.update_layout(
+                        title=f"Spread de precios {gd_sym} − {al_sym}",
+                        yaxis_title="Spread (precio GD − precio AL)",
+                        height=380, template="plotly_white",
+                        hovermode="x unified",
+                    )
+                    st.plotly_chart(fig_sp, use_container_width=True)
+
+                    # Ratio GD/AL
+                    ratio_mean = df_merge["ratio"].mean()
+                    ratio_std  = df_merge["ratio"].std()
+                    ratio_now  = df_merge["ratio"].iloc[-1]
+                    fig_ratio = go.Figure()
+                    fig_ratio.add_trace(go.Scatter(
+                        x=df_merge["date"], y=df_merge["ratio"],
+                        mode="lines", name="Ratio GD/AL",
+                        line=dict(color="#EF553B", width=1.5),
+                    ))
+                    fig_ratio.add_hline(y=ratio_mean, line_dash="dash", line_color="gray",
+                                         annotation_text=f"Media {ratio_mean:.4f}", annotation_position="right")
+                    fig_ratio.add_hrect(y0=ratio_mean-ratio_std, y1=ratio_mean+ratio_std,
+                                         fillcolor="rgba(239,85,59,0.08)", line_width=0)
+                    fig_ratio.add_hrect(y0=ratio_mean-2*ratio_std, y1=ratio_mean+2*ratio_std,
+                                         fillcolor="rgba(239,85,59,0.04)", line_width=0)
+                    fig_ratio.add_scatter(
+                        x=[df_merge["date"].iloc[-1]], y=[ratio_now],
+                        mode="markers", name="Hoy",
+                        marker=dict(color="red", size=10),
+                    )
+                    fig_ratio.update_layout(
+                        title=f"Ratio de precios {gd_sym} / {al_sym}",
+                        yaxis_title="Ratio",
+                        height=320, template="plotly_white",
+                        hovermode="x unified",
+                    )
+                    st.plotly_chart(fig_ratio, use_container_width=True)
+                    st.caption(f"Z-score actual: {zscore_now:.2f} | Ratio actual: {ratio_now:.4f} vs media {ratio_mean:.4f} ± {ratio_std:.4f}")
+
+        # ══════════════════════════════════════════════════════════════════
+        # SUB-TAB B: ESCENARIOS DE SHOCK
+        # ══════════════════════════════════════════════════════════════════
+        with ct5b:
+            st.markdown("**Impacto en precio ante cambio en TIR**")
+            st.caption("ΔP ≈ −DurMod × ΔY + ½ × Convexidad × ΔY²")
+
+            if not metricas:
+                st.info("Sin precios actuales de data912.")
+            else:
+                # Shocks a analizar
+                c_shock1, c_shock2 = st.columns(2)
+                with c_shock1:
+                    shocks_input = st.text_input(
+                        "Shocks en bps (separados por coma)",
+                        value="-200,-100,-50,+50,+100,+200",
+                        key="t5_shocks",
+                    )
+                with c_shock2:
+                    bonos_shock = st.multiselect(
+                        "Bonos a analizar",
+                        list(metricas.keys()),
+                        default=["GD30","AL30","GD35","AL35","GD38","GD41"],
+                        key="t5_bonos_shock",
+                    )
+
+                try:
+                    shocks_bps = [int(s.strip().replace("+","")) for s in shocks_input.split(",")]
+                except:
+                    shocks_bps = [-200,-100,-50,50,100,200]
+
+                if bonos_shock:
+                    shock_rows = []
+                    for tk in bonos_shock:
+                        if tk not in metricas: continue
+                        m = metricas[tk]
+                        row = {"Ticker": tk, "TIR actual": f"{m['ytm']*100:.3f}%",
+                               "Precio actual": f"{m['precio_limpio']:.2f}",
+                               "DurMod": f"{m['dur_mod']:.3f}" if m['dur_mod'] else "N/D",
+                               "Convex.": f"{m['convexity']:.3f}" if m['convexity'] else "N/D"}
+                        for bps in shocks_bps:
+                            dy = bps / 10000
+                            dm = m["dur_mod"] or 0
+                            cv = m["convexity"] or 0
+                            dp_pct = (-dm * dy + 0.5 * cv * dy**2) * 100
+                            new_p  = m["precio_limpio"] * (1 + dp_pct/100)
+                            row[f"{bps:+d}bps"] = f"{dp_pct:+.2f}% ({new_p:.2f})"
+                        shock_rows.append(row)
+
+                    df_shock = pd.DataFrame(shock_rows)
+                    st.dataframe(df_shock, use_container_width=True, hide_index=True)
+
+                    # Gráfico de barras por shock para comparar bonos
+                    st.divider()
+                    shock_sel = st.select_slider(
+                        "Shock para visualizar",
+                        options=shocks_bps,
+                        value=shocks_bps[len(shocks_bps)//2],
+                        key="t5_shock_vis",
+                        format_func=lambda x: f"{x:+d} bps",
+                    )
+                    dy_sel = shock_sel / 10000
+                    fig_bar = go.Figure()
+                    for tk in bonos_shock:
+                        if tk not in metricas: continue
+                        m = metricas[tk]
+                        dm = m["dur_mod"] or 0
+                        cv = m["convexity"] or 0
+                        dp = (-dm * dy_sel + 0.5 * cv * dy_sel**2) * 100
+                        fig_bar.add_trace(go.Bar(
+                            name=tk, x=[tk], y=[dp],
+                            marker_color="#00cc88" if dp >= 0 else "#ff4b4b",
+                            text=f"{dp:+.2f}%", textposition="outside",
+                        ))
+                    fig_bar.update_layout(
+                        title=f"Cambio en precio ante shock de {shock_sel:+d} bps",
+                        yaxis_title="ΔP (%)",
+                        height=380, template="plotly_white",
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig_bar, use_container_width=True)
+
+                    # Curva de precio vs shock continuo por bono seleccionado
+                    st.divider()
+                    st.markdown("**Perfil de sensibilidad continuo**")
+                    bono_perfil = st.selectbox("Bono", bonos_shock, key="t5_bono_perfil")
+                    if bono_perfil in metricas:
+                        m = metricas[bono_perfil]
+                        dm = m["dur_mod"] or 0
+                        cv = m["convexity"] or 0
+                        dy_range = np.linspace(-0.04, 0.04, 200)
+                        dp_range = (-dm * dy_range + 0.5 * cv * dy_range**2) * 100
+                        new_p_range = m["precio_limpio"] * (1 + dp_range/100)
+                        fig_perf = go.Figure()
+                        fig_perf.add_trace(go.Scatter(
+                            x=dy_range*10000, y=new_p_range,
+                            mode="lines", name="Precio estimado",
+                            line=dict(color="#636EFA", width=2),
+                            fill="tozeroy", fillcolor="rgba(99,110,250,0.06)",
+                        ))
+                        fig_perf.add_vline(x=0, line_dash="dash", line_color="gray")
+                        fig_perf.add_hline(y=m["precio_limpio"], line_dash="dot",
+                                            line_color="orange",
+                                            annotation_text=f"Precio actual {m['precio_limpio']:.2f}",
+                                            annotation_position="right")
+                        fig_perf.update_layout(
+                            title=f"{bono_perfil} — Precio estimado vs shock (±400 bps)",
+                            xaxis_title="Shock (bps)",
+                            yaxis_title="Precio estimado (% VN)",
+                            height=360, template="plotly_white",
+                        )
+                        st.plotly_chart(fig_perf, use_container_width=True)
+                        st.caption(
+                            f"DurMod: {dm:.4f} | Convexidad: {cv:.4f} | "
+                            f"Precio actual: {m['precio_limpio']:.2f} | TIR: {m['ytm']*100:.3f}%"
+                        )
+
