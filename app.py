@@ -489,51 +489,63 @@ def _precio_sucio_from_ytm(bond_key: str, ytm_target: float, settlement=None):
     return sum(tot/(1+ytm_target)**_frac_30_360(settlement, cd) for cd, tot in cfs)
 
 # ─── CATÁLOGO TESORO ──────────────────────────────────────────────────────────
+# Fuente: MECON - Estructura Financiera Títulos Públicos al 31/1/2026
+# Campos: familia, desc, vto (YYYY-MM-DD), moneda, tem (TEM mensual emisión si aplica)
 CATALOG_TESORO = {
-    "T30J6": {"familia":"BONCAP","desc":"BONCAP $/30-06-2026","vto":"2026-06-30","moneda":"ARP"},
-    "T15E7": {"familia":"BONCAP","desc":"BONCAP $/15-01-2027","vto":"2027-01-15","moneda":"ARP"},
-    "T30A7": {"familia":"BONCAP","desc":"BONCAP $/30-04-2027","vto":"2027-04-30","moneda":"ARP"},
-    "T31Y7": {"familia":"BONCAP","desc":"BONCAP $/31-05-2027","vto":"2027-05-31","moneda":"ARP"},
-    "T30J7": {"familia":"BONCAP","desc":"BONCAP $/30-06-2027","vto":"2027-06-30","moneda":"ARP"},
-    "TZXM6": {"familia":"BONCER","desc":"BONCER CER/31-03-2026","vto":"2026-03-31","moneda":"UCP"},
-    "TZX26": {"familia":"BONCER","desc":"BONCER CER/30-06-2026","vto":"2026-06-30","moneda":"UCP"},
-    "TZXO6": {"familia":"BONCER","desc":"BONCER CER/31-10-2026","vto":"2026-10-31","moneda":"UCP"},
-    "TZXD6": {"familia":"BONCER","desc":"BONCER CER/15-12-2026","vto":"2026-12-15","moneda":"UCP"},
-    "TZXM7": {"familia":"BONCER","desc":"BONCER CER/31-03-2027","vto":"2027-03-31","moneda":"UCP"},
-    "TZXA7": {"familia":"BONCER","desc":"BONCER CER/30-04-2027","vto":"2027-04-30","moneda":"UCP"},
-    "TZXY7": {"familia":"BONCER","desc":"BONCER CER/31-05-2027","vto":"2027-05-31","moneda":"UCP"},
-    "TZX27": {"familia":"BONCER","desc":"BONCER CER/30-06-2027","vto":"2027-06-30","moneda":"UCP"},
-    "TZXD7": {"familia":"BONCER","desc":"BONCER CER/15-12-2027","vto":"2027-12-15","moneda":"UCP"},
-    "TZX28": {"familia":"BONCER","desc":"BONCER CER/30-06-2028","vto":"2028-06-30","moneda":"UCP"},
-    "TV26":  {"familia":"DL",    "desc":"BONTE DL/30-06-2026","vto":"2026-06-30","moneda":"DLK"},
-    "BOPRE": {"familia":"BONTE", "desc":"BONTE USD 6.5%/30-11-2029","vto":"2029-11-30","moneda":"USD"},
-    "TB30":  {"familia":"BONTE", "desc":"BONTE $/29.5%/30-05-2030","vto":"2030-05-30","moneda":"ARP"},
-    "TTJ26": {"familia":"DUAL",  "desc":"DUAL $/30-06-2026","vto":"2026-06-30","moneda":"ARP"},
-    "TTS26": {"familia":"DUAL",  "desc":"DUAL $/15-09-2026","vto":"2026-09-15","moneda":"ARP"},
-    "TTD26": {"familia":"DUAL",  "desc":"DUAL $/15-12-2026","vto":"2026-12-15","moneda":"ARP"},
-    "AO27":  {"familia":"Hard Dollar","desc":"BONAR USD 6%/29-10-2027","vto":"2027-10-29","moneda":"USD"},
-    "S17A6": {"familia":"LECAP", "desc":"LECAP $/17-04-2026","vto":"2026-04-17","moneda":"ARP"},
-    "S30A6": {"familia":"LECAP", "desc":"LECAP $/30-04-2026","vto":"2026-04-30","moneda":"ARP"},
-    "S15Y6": {"familia":"LECAP", "desc":"LECAP $/15-05-2026","vto":"2026-05-15","moneda":"ARP"},
-    "S29Y6": {"familia":"LECAP", "desc":"LECAP $/29-05-2026","vto":"2026-05-29","moneda":"ARP"},
-    "S16M6": {"familia":"LECAP", "desc":"LECAP $/16-03-2026","vto":"2026-03-16","moneda":"ARP"},
-    "S27F6": {"familia":"LECAP", "desc":"LECAP $/27-02-2026","vto":"2026-02-27","moneda":"ARP"},
-    "S31L6": {"familia":"LECAP", "desc":"LECAP $/31-07-2026","vto":"2026-07-31","moneda":"ARP"},
-    "S31G6": {"familia":"LECAP", "desc":"LECAP $/31-08-2026","vto":"2026-08-31","moneda":"ARP"},
-    "S30S6": {"familia":"LECAP", "desc":"LECAP $/30-09-2026","vto":"2026-09-30","moneda":"ARP"},
-    "S30O6": {"familia":"LECAP", "desc":"LECAP $/30-10-2026","vto":"2026-10-30","moneda":"ARP"},
-    "S30N6": {"familia":"LECAP", "desc":"LECAP $/30-11-2026","vto":"2026-11-30","moneda":"ARP"},
-    "M30A6": {"familia":"TAMAR", "desc":"TAMAR+4%/30-04-2026","vto":"2026-04-30","moneda":"ARP"},
-    "M31G6": {"familia":"TAMAR", "desc":"TAMAR+5%/31-08-2026","vto":"2026-08-31","moneda":"ARP"},
-    "M15D5": {"familia":"TAMAR", "desc":"TAMAR+2%/15-12-2026","vto":"2026-12-15","moneda":"ARP"},
-    "TMF27": {"familia":"TAMAR", "desc":"BONO TAMAR/26-02-2027","vto":"2027-02-26","moneda":"ARP"},
-    "X15Y6": {"familia":"LECER", "desc":"LECER CER/15-05-2026","vto":"2026-05-15","moneda":"ARP"},
-    "X29Y6": {"familia":"LECER", "desc":"LECER CER/29-05-2026","vto":"2026-05-29","moneda":"ARP"},
-    "X31L6": {"familia":"LECER", "desc":"LECER CER/31-07-2026","vto":"2026-07-31","moneda":"ARP"},
-    "X30S6": {"familia":"LECER", "desc":"LECER CER/30-09-2026","vto":"2026-09-30","moneda":"ARP"},
-    "X30N6": {"familia":"LECER", "desc":"LECER CER/30-11-2026","vto":"2026-11-30","moneda":"ARP"},
-    "D30A6": {"familia":"LELINK","desc":"LELINK USD/30-04-2026","vto":"2026-04-30","moneda":"USD"},
-    "D30S6": {"familia":"LELINK","desc":"LELINK USD/30-09-2026","vto":"2026-09-30","moneda":"USD"},
+    # ── BONCAP (tasa cero / capitalizable en pesos) ────────────────────────
+    "T30J6": {"familia":"BONCAP","desc":"BONCAP $/30-06-2026","vto":"2026-06-30","moneda":"ARP","tem":0.0215},
+    "T15E7": {"familia":"BONCAP","desc":"BONCAP $/15-01-2027","vto":"2027-01-15","moneda":"ARP","tem":0.0205},
+    "T30A7": {"familia":"BONCAP","desc":"BONCAP $/30-04-2027","vto":"2027-04-30","moneda":"ARP","tem":0.0255},
+    "T31Y7": {"familia":"BONCAP","desc":"BONCAP $/31-05-2027","vto":"2027-05-31","moneda":"ARP","tem":0.0240},
+    "T30J7": {"familia":"BONCAP","desc":"BONCAP $/30-06-2027","vto":"2027-06-30","moneda":"ARP","tem":0.0258},
+    # ── BONCER (tasa cero ajustado CER) ───────────────────────────────────
+    "TZXM6": {"familia":"BONCER","desc":"BONCER CER 0%/31-03-2026","vto":"2026-03-31","moneda":"UCP","tem":0.0},
+    "TZX26": {"familia":"BONCER","desc":"BONCER CER 0%/30-06-2026","vto":"2026-06-30","moneda":"UCP","tem":0.0},
+    "TZXO6": {"familia":"BONCER","desc":"BONCER CER 0%/31-10-2026","vto":"2026-10-31","moneda":"UCP","tem":0.0},
+    "TZXD6": {"familia":"BONCER","desc":"BONCER CER 0%/15-12-2026","vto":"2026-12-15","moneda":"UCP","tem":0.0},
+    "TZXM7": {"familia":"BONCER","desc":"BONCER CER 0%/31-03-2027","vto":"2027-03-31","moneda":"UCP","tem":0.0},
+    "TZXA7": {"familia":"BONCER","desc":"BONCER CER 0%/30-04-2027","vto":"2027-04-30","moneda":"UCP","tem":0.0},
+    "TZXY7": {"familia":"BONCER","desc":"BONCER CER 0%/31-05-2027","vto":"2027-05-31","moneda":"UCP","tem":0.0},
+    "TZX27": {"familia":"BONCER","desc":"BONCER CER 0%/30-06-2027","vto":"2027-06-30","moneda":"UCP","tem":0.0},
+    "TZXD7": {"familia":"BONCER","desc":"BONCER CER 0%/15-12-2027","vto":"2027-12-15","moneda":"UCP","tem":0.0},
+    "TZX28": {"familia":"BONCER","desc":"BONCER CER 0%/30-06-2028","vto":"2028-06-30","moneda":"UCP","tem":0.0},
+    # ── BONTE DL / USD ────────────────────────────────────────────────────
+    "TV26":  {"familia":"DL",    "desc":"BONTE DL 0%/30-06-2026","vto":"2026-06-30","moneda":"DLK","tem":0.0},
+    "BOPRE": {"familia":"BONTE", "desc":"BONTE USD 6.5%/30-11-2029","vto":"2029-11-30","moneda":"USD","tem":None},
+    "TB30":  {"familia":"BONTE", "desc":"BONTE $/29.5%/30-05-2030","vto":"2030-05-30","moneda":"ARP","tem":None},
+    # ── BONTE DUAL (max entre tasa fija CER y TAMAR) ──────────────────────
+    "TTM26": {"familia":"DUAL",  "desc":"DUAL 2.25%oCER/TAMAR/16-03-2026","vto":"2026-03-16","moneda":"ARP","tem":0.0225},
+    "TTJ26": {"familia":"DUAL",  "desc":"DUAL 2.19%oCER/TAMAR/30-06-2026","vto":"2026-06-30","moneda":"ARP","tem":0.0219},
+    "TTS26": {"familia":"DUAL",  "desc":"DUAL 2.17%oCER/TAMAR/15-09-2026","vto":"2026-09-15","moneda":"ARP","tem":0.0217},
+    "TTD26": {"familia":"DUAL",  "desc":"DUAL 2.14%oCER/TAMAR/15-12-2026","vto":"2026-12-15","moneda":"ARP","tem":0.0214},
+    # ── BONAR USD ─────────────────────────────────────────────────────────
+    "AO27":  {"familia":"Hard Dollar","desc":"BONAR USD 6%/29-10-2027","vto":"2027-10-29","moneda":"USD","tem":None},
+    # ── LECAP (tasa efectiva mensual capitalizable) ────────────────────────
+    "S17A6": {"familia":"LECAP","desc":"LECAP $/17-04-2026","vto":"2026-04-17","moneda":"ARP","tem":0.0240},
+    "S30A6": {"familia":"LECAP","desc":"LECAP $/30-04-2026","vto":"2026-04-30","moneda":"ARP","tem":0.0353},
+    "S15Y6": {"familia":"LECAP","desc":"LECAP $/15-05-2026","vto":"2026-05-15","moneda":"ARP","tem":None},
+    "S29Y6": {"familia":"LECAP","desc":"LECAP $/29-05-2026","vto":"2026-05-29","moneda":"ARP","tem":0.0235},
+    "S16M6": {"familia":"LECAP","desc":"LECAP $/16-03-2026","vto":"2026-03-16","moneda":"ARP","tem":0.0299},
+    "S27F6": {"familia":"LECAP","desc":"LECAP $/27-02-2026","vto":"2026-02-27","moneda":"ARP","tem":0.0395},
+    "S31L6": {"familia":"LECAP","desc":"LECAP $/31-07-2026","vto":"2026-07-31","moneda":"ARP","tem":0.0275},
+    "S31G6": {"familia":"LECAP","desc":"LECAP $/31-08-2026","vto":"2026-08-31","moneda":"ARP","tem":0.0250},
+    "S30S6": {"familia":"LECAP","desc":"LECAP $/30-09-2026","vto":"2026-09-30","moneda":"ARP","tem":None},
+    "S30O6": {"familia":"LECAP","desc":"LECAP $/30-10-2026","vto":"2026-10-30","moneda":"ARP","tem":None},
+    "S30N6": {"familia":"LECAP","desc":"LECAP $/30-11-2026","vto":"2026-11-30","moneda":"ARP","tem":0.0230},
+    # ── LECAP TAMAR ───────────────────────────────────────────────────────
+    "M30A6": {"familia":"TAMAR","desc":"TAMAR+4%/30-04-2026","vto":"2026-04-30","moneda":"ARP","tem":None},
+    "M31G6": {"familia":"TAMAR","desc":"TAMAR+5%/31-08-2026","vto":"2026-08-31","moneda":"ARP","tem":None},
+    "M15D5": {"familia":"TAMAR","desc":"TAMAR+2%/15-12-2026","vto":"2026-12-15","moneda":"ARP","tem":None},
+    "TMF27": {"familia":"TAMAR","desc":"BONO TAMAR/26-02-2027","vto":"2027-02-26","moneda":"ARP","tem":None},
+    # ── LECER (letra CER cupón cero) ──────────────────────────────────────
+    "X15Y6": {"familia":"LECER","desc":"LECER CER/15-05-2026","vto":"2026-05-15","moneda":"ARP","tem":0.0},
+    "X29Y6": {"familia":"LECER","desc":"LECER CER/29-05-2026","vto":"2026-05-29","moneda":"ARP","tem":0.0},
+    "X31L6": {"familia":"LECER","desc":"LECER CER/31-07-2026","vto":"2026-07-31","moneda":"ARP","tem":0.0},
+    "X30S6": {"familia":"LECER","desc":"LECER CER/30-09-2026","vto":"2026-09-30","moneda":"ARP","tem":0.0},
+    "X30N6": {"familia":"LECER","desc":"LECER CER/30-11-2026","vto":"2026-11-30","moneda":"ARP","tem":0.0},
+    # ── LELINK (letra dollar-linked cupón cero) ───────────────────────────
+    "D30A6": {"familia":"LELINK","desc":"LELINK USD/30-04-2026","vto":"2026-04-30","moneda":"USD","tem":0.0},
+    "D30S6": {"familia":"LELINK","desc":"LELINK USD/30-09-2026","vto":"2026-09-30","moneda":"USD","tem":0.0},
 }
 FAMILIA_CLASE = {
     "Hard Dollar":"Hard Dollar","BONCAP":"Tasa Fija / Lecap","LECAP":"Tasa Fija / Lecap",
@@ -740,30 +752,27 @@ with rf_tab1:
         hoy_t1 = datetime.today().date()
         hard_rows = []
         for tk in SOBERANOS_BASE:
-            p_ars, var_ars, _ = _get_price(df_live, tk, "")
-            p_d,   var_d,   _ = _get_price(df_live, tk, "D")  # cable
-            p_c,   var_c,   _ = _get_price(df_live, tk, "C")  # MEP/CCL
-            vol, _, _         = _get_price(df_live, tk, "")
+            p_mep, var_mep, _ = _get_price(df_live, tk, "D")  # D = MEP
+            p_cable, var_cable, _ = _get_price(df_live, tk, "C")  # C = Cable
 
-            # Calcular TIR y Duration si tenemos precio D
+            # Calcular TIR y Duration sobre precio MEP (D)
             tir, dur, par = None, None, None
-            if p_d and p_d > 0 and tk in BONDS_DB:
-                pl_d = p_d if p_d > 5 else p_d * 100
-                cc   = _cupon_corrido(tk, hoy_t1)
-                ps_d = pl_d + cc
-                tir  = _ytm(tk, ps_d, hoy_t1)
-                dur  = _duration_macaulay(tk, ps_d, hoy_t1)
-                par  = _paridad(tk, ps_d, hoy_t1)
+            if p_mep and p_mep > 0 and tk in BONDS_DB:
+                pl_mep = p_mep if p_mep > 5 else p_mep * 100
+                cc     = _cupon_corrido(tk, hoy_t1)
+                ps_mep = pl_mep + cc
+                tir    = _ytm(tk, ps_mep, hoy_t1)
+                dur    = _duration_macaulay(tk, ps_mep, hoy_t1)
+                par    = _paridad(tk, ps_mep, hoy_t1)
 
             ley = "NY" if tk.startswith("G") or tk == "AE38" else "AR"
             hard_rows.append({
                 "Ticker": tk,
                 "Ley": ley,
-                "ARS": f"{p_ars:,.0f}" if p_ars else "—",
-                "Cable (D)": round(p_d, 2) if p_d else None,
-                "Var D %": round(var_d, 2) if var_d is not None else None,
-                "MEP/CCL (C)": round(p_c, 2) if p_c else None,
-                "Var C %": round(var_c, 2) if var_c is not None else None,
+                "MEP (D)": round(p_mep, 2) if p_mep else None,
+                "Var MEP %": round(var_mep, 2) if var_mep is not None else None,
+                "Cable (C)": round(p_cable, 2) if p_cable else None,
+                "Var Cable %": round(var_cable, 2) if var_cable is not None else None,
                 "TIR": round(tir * 100, 3) if tir else None,
                 "Duration": round(dur, 2) if dur else None,
                 "Paridad": round(par, 4) if par else None,
@@ -1589,7 +1598,14 @@ with rf_tab7:
         return pd.DataFrame(results)
 
     def _calc_tem_bullet(sym, vto_str, n_dias):
-        """TEM implícita para LECAP/BONCAP bullet. rend = TEM % mensual."""
+        """
+        TEM implícita para LECAP/BONCAP bullet.
+        Precio data912: estas letras cotizan sobre 1 (ej: 1.0567 = 105.67% del VN)
+        o sobre 100 (ej: 105.67). Usamos el precio relativo al VN de emisión.
+        TEM = (VN_final / precio_hoy) ^ (1/meses) - 1
+        donde VN_final incluye la capitalización a la TEM de emisión si aplica.
+        Para zero-coupon: VN_final = 1000 (o 100, se cancela).
+        """
         df_h = d912_historical(sym).tail(n_dias).copy()
         if df_h.empty:
             return pd.DataFrame()
@@ -1603,22 +1619,31 @@ with rf_tab7:
             dias   = (vto - settle).days
             if dias <= 0:
                 continue
-            meses  = dias / 30.4375
-            # TEM: precio = 1000 / (1+TEM)^meses  →  TEM = (1000/precio)^(1/meses) - 1
-            # precio viene normalizado sobre 1000 en data912 para letras
-            # si precio < 10 asumimos ratio, si > 100 es sobre 1000
-            if precio > 100:
-                ratio = 1000 / precio
-            elif precio > 10:
-                ratio = 100 / precio
+            meses = dias / 30.4375
+            # Normalizar precio a % del VN (base 100)
+            # data912 letras: precio ej 1174.50 → sobre 1000 → /10 para base 100
+            # o precio 117.45 → ya en base 100
+            if precio > 500:
+                p_norm = precio / 10   # sobre 1000
+            elif precio > 5:
+                p_norm = precio        # sobre 100
             else:
-                ratio = 1 / precio
-            tem = ratio ** (1 / meses) - 1
+                p_norm = precio * 100  # ratio
+            # TEM implícita: comprás a p_norm, recibís 100 en `meses` meses
+            if p_norm <= 0 or p_norm > 200:
+                continue
+            tem = (100 / p_norm) ** (1 / meses) - 1
             results.append({"date": row["date"], "rend": tem * 100})
         return pd.DataFrame(results)
 
     def _calc_tir_cer(sym, vto_str, n_dias):
-        """Tasa real CER implícita anualizada para BONCER/LECER zero-coupon."""
+        """
+        Tasa real CER implícita anualizada para BONCER/LECER zero-coupon.
+        El precio refleja el ajuste CER ya capitalizado: cotiza sobre VN ajustado.
+        La tasa real implícita es el rendimiento adicional sobre CER.
+        Formula: tasa_real = (VN_base / precio_actual)^(365/días) - 1
+        donde precio_actual está en la misma base que VN_base.
+        """
         df_h = d912_historical(sym).tail(n_dias).copy()
         if df_h.empty:
             return pd.DataFrame()
@@ -1632,14 +1657,17 @@ with rf_tab7:
             dias   = (vto - settle).days
             if dias <= 0:
                 continue
-            # precio sobre 100 o sobre 1 — normalizar
-            if precio > 100:
-                p = precio / 1000   # si viene sobre 1000
-            elif precio > 1:
-                p = precio / 100
+            # Normalizar a base 100
+            if precio > 500:
+                p_norm = precio / 10
+            elif precio > 5:
+                p_norm = precio
             else:
-                p = precio
-            tir_real = (1 / p) ** (365 / dias) - 1
+                p_norm = precio * 100
+            if p_norm <= 0 or p_norm > 300:
+                continue
+            # Tasa real implícita: descuento adicional sobre CER
+            tir_real = (100 / p_norm) ** (365 / dias) - 1
             results.append({"date": row["date"], "rend": tir_real * 100})
         return pd.DataFrame(results)
 
