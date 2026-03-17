@@ -794,19 +794,26 @@ with rf_tab1:
         def _mono(val):
             return "font-family: JetBrains Mono, monospace; font-size: 13px"
 
-        styled = (df_hard.style
-            .applymap(_color_var_hard, subset=["Var D %", "Var C %"])
-            .applymap(_mono, subset=["Cable (D)", "MEP/CCL (C)", "TIR", "Duration", "Paridad"])
-            .format({
-                "Cable (D)":   lambda x: f"{x:.2f}" if x else "—",
-                "Var D %":     lambda x: f"{x:+.2f}%" if x is not None and not pd.isna(x) else "—",
-                "MEP/CCL (C)": lambda x: f"{x:.2f}" if x else "—",
-                "Var C %":     lambda x: f"{x:+.2f}%" if x is not None and not pd.isna(x) else "—",
-                "TIR":         lambda x: f"{x:.3f}%" if x else "—",
-                "Duration":    lambda x: f"{x:.2f}" if x else "—",
-                "Paridad":     lambda x: f"{x:.4f}" if x else "—",
-            }, na_rep="—")
-        )
+        # subset solo con columnas que existen en df_hard
+        _cols = df_hard.columns.tolist()
+        _var_cols  = [c for c in ["Var MEP %", "Var Cable %"] if c in _cols]
+        _mono_cols = [c for c in ["MEP (D)", "Cable (C)", "TIR", "Duration", "Paridad"] if c in _cols]
+        _fmt = {}
+        if "MEP (D)"     in _cols: _fmt["MEP (D)"]     = lambda x: f"{x:.2f}" if x and not pd.isna(x) else "—"
+        if "Var MEP %"   in _cols: _fmt["Var MEP %"]   = lambda x: f"{x:+.2f}%" if x is not None and not pd.isna(x) else "—"
+        if "Cable (C)"   in _cols: _fmt["Cable (C)"]   = lambda x: f"{x:.2f}" if x and not pd.isna(x) else "—"
+        if "Var Cable %" in _cols: _fmt["Var Cable %"] = lambda x: f"{x:+.2f}%" if x is not None and not pd.isna(x) else "—"
+        if "TIR"         in _cols: _fmt["TIR"]         = lambda x: f"{x:.3f}%" if x and not pd.isna(x) else "—"
+        if "Duration"    in _cols: _fmt["Duration"]    = lambda x: f"{x:.2f}" if x and not pd.isna(x) else "—"
+        if "Paridad"     in _cols: _fmt["Paridad"]     = lambda x: f"{x:.4f}" if x and not pd.isna(x) else "—"
+
+        styled = df_hard.style
+        if _var_cols:
+            styled = styled.applymap(_color_var_hard, subset=_var_cols)
+        if _mono_cols:
+            styled = styled.applymap(_mono, subset=_mono_cols)
+        if _fmt:
+            styled = styled.format(_fmt, na_rep="—")
         st.dataframe(styled, use_container_width=True, hide_index=True, height=530)
         st.caption("D = Cable USD · C = MEP/CCL · TIR calculada sobre precio cable · Fuente: data912.com")
 
