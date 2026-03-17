@@ -25,6 +25,14 @@ def _mae_key():
 
 D912_BASE = "https://data912.com"
 
+# ─── MAE CONSTANTS ────────────────────────────────────────────────────────────
+MAE_BASE              = "https://api.a3mercados.com.ar"
+MAE_HEADERS_EXTRA     = {"Accept": "application/json"}
+MAE_SEG_SOBERANOS_MAE = "2"    # Soberanos ley argentina
+MAE_SEG_SOBERANOS_PPT = "4"    # Soberanos ley extranjera (PPT)
+MAE_SEG_ONS           = "5"    # Obligaciones Negociables
+
+
 @st.cache_data(ttl=120)
 def d912_live_bonds():
     """
